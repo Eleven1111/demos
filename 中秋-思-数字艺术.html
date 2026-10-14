@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>思 · 中秋数字艺术</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #060a1c; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; touch-action: none; cursor: pointer; }
+  .hint {
+    position: fixed; left: 50%; bottom: 8vh; transform: translateX(-50%);
+    color: rgba(245, 230, 200, .75); font: 14px/1.6 "Noto Serif SC", "Songti SC", serif;
+    letter-spacing: .35em; text-indent: .35em; white-space: nowrap;
+    pointer-events: none; transition: opacity 1.2s ease; text-shadow: 0 0 12px rgba(255,200,120,.35);
+  }
+  .hint.gone { opacity: 0; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint" id="hint">轻触任意处 · 放飞一盏心灯</div>
+<script>
+'use strict';
+/* ============================================================
+   《思》—— 中秋数字艺术
+   创意：把"思念"的"思"拆开来写——
+     上半的"田"，化作一轮满月（月面上隐约刻着田字纹）；
+     下半的"心"，化作一颗跳动的心。
+   月在上，心在下，思念便有了形状。
+   金色光尘自心间升起，飘向月亮，如同思念跨越千里。
+   ============================================================ */
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const hintEl = document.getElementById('hint');
+
+let W = 0, H = 0, DPR = 1;
+let skyGrad = null, groundGrad = null;
+let ridgeFar = [], ridgeNear = [];
+
+// ---------- 工具 ----------
+const TAU = Math.PI * 2;
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+// 三次贝塞尔取点
+function cubic(p0, c1, c2, p3, t) {
+  const u = 1 - t;
+  return {
+    x: u*u*u*p0.x + 3*u*u*t*c1.x + 3*u*t*t*c2.x + t*t*t*p3.x,
+    y: u*u*u*p0.y + 3*u*u*t*c1.y + 3*u*t*t*c2.y + t*t*t*p3.y
+  };
+}
+
+// 心形路径（s 为半宽）
+function heartPath(x, y, s) {
+  ctx.beginPath();
+  ctx.moveTo(x, y + s * 0.92);
+  ctx.bezierCurveTo(x - s * 1.45, y + s * 0.05, x - s * 0.92, y - s * 0.92, x, y - s * 0.28);
+  ctx.bezierCurveTo(x + s * 0.92, y - s * 0.92, x + s * 1.45, y + s * 0.05, x, y + s * 0.92);
+  ctx.closePath();
+}
+
+// ---------- 场景元素 ----------
+let stars = [], petals = [], dust = [], flow = [], ripples = [], lanterns = [];
+let clouds = [], meteors = [];
+let nextMeteorAt = 7;
+let prevBeatPhase = 0;
+let hintHidden = false;
+
+function buildScene() {
+  stars = [];
+  const n = Math.round(clamp(W * H / 9000, 90, 220));
+  for (let i = 0; i < n; i++) {
+    stars.push({ x: rand(0, W), y: rand(0, H * 0.72), r: rand(0.5, 1.7),
+      base: rand(0.25, 0.8), amp: rand(0.1, 0.35), sp: rand(0.6, 2.4), ph: rand(0, TAU),
+      big: Math.random() < 0.06 });
+  }
+  petals = [];
+  for (let i = 0; i < 36; i++) {
+    petals.push({ x0: rand(0, W), y: rand(0, H), sp: rand(14, 42), sw: rand(20, 60),
+      swSp: rand(0.5, 1.4), ph: rand(0, TAU), rot: rand(0, TAU), vr: rand(-1.5, 1.5),
+      size: rand(2.5, 5.5) });
+  }
+  dust = [];
+  for (let i = 0; i < 42; i++) {
+    dust.push({ x: rand(0, W), y: rand(0, H), r: rand(0.6, 1.8),
+      vx: rand(-6, 6), vy: rand(-9, -2), a: rand(0.05, 0.16), ph: rand(0, TAU) });
+  }
+  // 心 -> 月 的光尘流
+  flow = [];
+  for (let i = 0; i < 70; i++) {
+    flow.push({ p: Math.random(), sp: rand(0.05, 0.13), off: rand(-14, 14),
+      size: rand(1.2, 3.2), ph: rand(0, TAU), gold: Math.random() < 0.7 });
+  }
+  clouds = [];
+  const my = moon().y, mr = moon().r;
+  for (let i = 0; i < 3; i++) {
+    clouds.push({ yOff: rand(-mr * 0.5, mr * 0.6), x0: rand(0, W), sp: rand(8, 22),
+      w: rand(mr * 2.4, mr * 4.2), h: rand(mr * 0.28, mr * 0.5), a: rand(0.10, 0.17) });
+  }
+  // 远山 / 近山轮廓（正弦叠加）
+  ridgeFar = []; ridgeNear = [];
+  const f1 = rand(0, TAU), f2 = rand(0, TAU), f3 = rand(0, TAU), f4 = rand(0, TAU);
+  for (let x = 0; x <= W; x += 8) {
+    ridgeFar.push({ x, y: H * 0.80
+      + Math.sin(x * 0.006 + f1) * H * 0.022 + Math.sin(x * 0.017 + f2) * H * 0.010 });
+    ridgeNear.push({ x, y: H * 0.87
+      + Math.sin(x * 0.004 + f3) * H * 0.028 + Math.sin(x * 0.013 + f4) * H * 0.012 });
+  }
+}
+
+function moon() {
+  const r = clamp(Math.min(W, H) * 0.135, 56, 175);
+  return { x: W * 0.5, y: H * 0.30, r };
+}
+function heart() {
+  const s = clamp(Math.min(W, H) * 0.085, 38, 110);
+  return { x: W * 0.5, y: H * 0.665, s };
+}
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  skyGrad = ctx.createLinearGradient(0, 0, 0, H);
+  skyGrad.addColorStop(0.00, '#060a1c');
+  skyGrad.addColorStop(0.45, '#0d1633');
+  skyGrad.addColorStop(0.75, '#2b2145');
+  skyGrad.addColorStop(1.00, '#4a2c4d');
+  groundGrad = ctx.createLinearGradient(0, H * 0.88, 0, H);
+  groundGrad.addColorStop(0, '#0a0c1e');
+  groundGrad.addColorStop(1, '#04060e');
+  buildScene();
+}
+
+// ---------- 各层绘制 ----------
+function drawSky() {
+  ctx.fillStyle = skyGrad;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function drawStars(t) {
+  for (const s of stars) {
+    const a = s.base + s.amp * Math.sin(t * s.sp + s.ph);
+    if (s.big) {
+      const g = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, s.r * 6);
+      g.addColorStop(0, `rgba(255,250,235,${0.55 * a})`);
+      g.addColorStop(1, 'rgba(255,250,235,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(s.x - s.r * 6, s.y - s.r * 6, s.r * 12, s.r * 12);
+    }
+    ctx.fillStyle = `rgba(235,240,255,${clamp(a, 0, 1)})`;
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, TAU); ctx.fill();
+  }
+}
+
+function drawWatermark(t) {
+  const size = Math.min(W, H) * 0.98;
+  ctx.save();
+  ctx.globalAlpha = 0.05 + 0.008 * Math.sin(t * 0.5);
+  ctx.font = `900 ${size}px "Noto Serif SC", "Songti SC", "SimSun", serif`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  try { ctx.letterSpacing = '0px'; } catch (e) {}
+  ctx.fillStyle = '#ffdc9e';
+  ctx.fillText('思', W * 0.5, H * 0.475);
+  ctx.restore();
+}
+
+function drawMoon(t) {
+  const m = moon();
+  const breathe = 0.5 + 0.5 * Math.sin(t * 0.7);
+  // 光晕（呼吸）
+  for (const [mult, base] of [[2.4, 0.20], [4.2, 0.08]]) {
+    const g = ctx.createRadialGradient(m.x, m.y, m.r * 0.8, m.x, m.y, m.r * mult);
+    const a = base * (0.75 + 0.35 * breathe);
+    g.addColorStop(0, `rgba(255,214,140,${a})`);
+    g.addColorStop(1, 'rgba(255,214,140,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(m.x - m.r * mult, m.y - m.r * mult, m.r * mult * 2, m.r * mult * 2);
+  }
+  // 月盘
+  const disc = ctx.createRadialGradient(m.x - m.r * 0.25, m.y - m.r * 0.3, m.r * 0.1, m.x, m.y, m.r);
+  disc.addColorStop(0, '#fffdf4');
+  disc.addColorStop(0.72, '#fbeec3');
+  disc.addColorStop(1, '#eec26a');
+  ctx.fillStyle = disc;
+  ctx.beginPath(); ctx.arc(m.x, m.y, m.r, 0, TAU); ctx.fill();
+  // 环形山（柔斑）
+  ctx.save();
+  ctx.beginPath(); ctx.arc(m.x, m.y, m.r, 0, TAU); ctx.clip();
+  const craters = [
+    [0.30, -0.22, 0.16], [-0.38, 0.12, 0.12], [0.05, 0.42, 0.10],
+    [-0.12, -0.48, 0.09], [0.52, 0.30, 0.08], [-0.55, -0.35, 0.07]
+  ];
+  for (const [cx, cy, cr] of craters) {
+    const g = ctx.createRadialGradient(m.x + cx * m.r, m.y + cy * m.r, 0,
+      m.x + cx * m.r, m.y + cy * m.r, cr * m.r);
+    g.addColorStop(0, 'rgba(170,128,72,0.28)');
+    g.addColorStop(1, 'rgba(170,128,72,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(m.x + cx * m.r, m.y + cy * m.r, cr * m.r, 0, TAU); ctx.fill();
+  }
+  // "田"字纹：月中的思之上半
+  ctx.save();
+  ctx.translate(m.x, m.y);
+  ctx.rotate(Math.sin(t * 0.25) * 0.045);
+  ctx.strokeStyle = 'rgba(146,104,44,0.42)';
+  ctx.lineWidth = Math.max(1.5, m.r * 0.028);
+  ctx.beginPath(); ctx.arc(0, 0, m.r * 0.62, 0, TAU); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(0, -m.r * 0.62); ctx.lineTo(0, m.r * 0.62);
+  ctx.moveTo(-m.r * 0.62, 0); ctx.lineTo(m.r * 0.62, 0);
+  ctx.stroke();
+  ctx.restore();
+  ctx.restore();
+  // 月缘微光
+  ctx.strokeStyle = 'rgba(255,244,210,0.55)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(m.x, m.y, m.r, 0, TAU); ctx.stroke();
+  // 流云掠过
+  for (const c of clouds) {
+    const cx = ((c.x0 + t * c.sp) % (W + c.w * 2)) - c.w;
+    const cy = m.y + c.yOff;
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, c.w / 2);
+    g.addColorStop(0, `rgba(205,215,245,${c.a})`);
+    g.addColorStop(1, 'rgba(205,215,245,0)');
+    ctx.save();
+    ctx.translate(cx, cy); ctx.scale(1, c.h / (c.w / 2)); ctx.translate(-cx, -cy);
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(cx, cy, c.w / 2, 0, TAU); ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawMountains() {
+  ctx.fillStyle = 'rgba(20,27,56,0.92)';
+  ctx.beginPath(); ctx.moveTo(0, H);
+  for (const p of ridgeFar) ctx.lineTo(p.x, p.y);
+  ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = 'rgba(14,20,48,0.96)';
+  ctx.beginPath(); ctx.moveTo(0, H);
+  for (const p of ridgeNear) ctx.lineTo(p.x, p.y);
+  ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
+}
+
+function drawGround(t) {
+  ctx.fillStyle = groundGrad;
+  ctx.fillRect(0, H * 0.88, W, H * 0.12);
+  // 小山丘 + 亭
+  const hx = W * 0.15, hy = H * 0.985, hr = Math.min(W, H) * 0.16;
+  ctx.fillStyle = '#0d1126';
+  ctx.beginPath(); ctx.ellipse(hx, hy + hr * 0.35, hr, hr * 0.55, 0, Math.PI, TAU); ctx.fill();
+  drawPavilion(hx, hy - hr * 0.12, clamp(Math.min(W, H) * 0.052, 26, 62), t);
+}
+
+function drawPavilion(x, baseY, s, t) {
+  ctx.save();
+  ctx.translate(x, baseY);
+  ctx.fillStyle = '#0b0e22';
+  // 台基
+  ctx.fillRect(-s * 1.25, -s * 0.16, s * 2.5, s * 0.16);
+  // 柱
+  ctx.fillRect(-s * 0.85, -s * 0.95, s * 0.22, s * 0.85);
+  ctx.fillRect(s * 0.63, -s * 0.95, s * 0.22, s * 0.85);
+  // 暖窗（一盏思念的灯）
+  const flick = 0.55 + 0.18 * Math.sin(t * 2.1) + 0.07 * Math.sin(t * 5.7);
+  ctx.fillStyle = `rgba(255,190,110,${flick})`;
+  ctx.fillRect(-s * 0.32, -s * 0.78, s * 0.64, s * 0.44);
+  // 屋顶（起翘的檐）
+  ctx.fillStyle = '#0b0e22';
+  ctx.beginPath();
+  ctx.moveTo(-s * 1.65, -s * 0.95);
+  ctx.quadraticCurveTo(-s * 0.8, -s * 1.18, 0, -s * 1.55);
+  ctx.quadraticCurveTo(s * 0.8, -s * 1.18, s * 1.65, -s * 0.95);
+  ctx.lineTo(s * 1.32, -s * 0.80);
+  ctx.quadraticCurveTo(0, -s * 1.06, -s * 1.32, -s * 0.80);
+  ctx.closePath(); ctx.fill();
+  // 宝顶
+  ctx.fillRect(-s * 0.06, -s * 1.78, s * 0.12, s * 0.26);
+  ctx.restore();
+}
+
+function flowPath() {
+  const m = moon(), h = heart();
+  return {
+    p0: { x: h.x, y: h.y - h.s * 0.3 },
+    c1: { x: h.x - W * 0.13, y: (h.y + m.y) / 2 + H * 0.02 },
+    c2: { x: m.x + W * 0.13, y: (h.y + m.y) / 2 - H * 0.02 },
+    p3: { x: m.x, y: m.y + m.r * 0.35 }
+  };
+}
+
+function drawRibbons(t) {
+  const m = moon(), h = heart();
+  const ribbons = [
+    { x0: h.x - h.s * 1.1, x1: m.x - m.r * 0.7, w: 9, ph: 0, a: 0.16 },
+    { x0: h.x + h.s * 1.1, x1: m.x + m.r * 0.7, w: 6, ph: 2.1, a: 0.12 }
+  ];
+  for (const r of ribbons) {
+    const sway = Math.sin(t * 0.9 + r.ph) * W * 0.03;
+    const g = ctx.createLinearGradient(0, h.y, 0, m.y);
+    g.addColorStop(0, `rgba(255,170,120,0)`);
+    g.addColorStop(0.5, `rgba(255,190,140,${r.a})`);
+    g.addColorStop(1, `rgba(255,220,170,0)`);
+    ctx.strokeStyle = g; ctx.lineWidth = r.w; ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(r.x0, h.y - h.s * 0.2);
+    ctx.quadraticCurveTo(r.x0 + sway * 1.6, (h.y + m.y) / 2, r.x1 + sway * 0.4, m.y + m.r * 0.4);
+    ctx.stroke();
+  }
+}
+
+function drawFlow(t, dt) {
+  const fp = flowPath();
+  for (const f of flow) {
+    f.p += f.sp * dt;
+    if (f.p > 1) { f.p -= 1; f.off = rand(-14, 14); }
+    const pos = cubic(fp.p0, fp.c1, fp.c2, fp.p3, f.p);
+    const wob = Math.sin(t * 2 + f.ph) * 6;
+    const a = Math.sin(f.p * Math.PI);
+    ctx.fillStyle = f.gold
+      ? `rgba(255,205,130,${0.85 * a})`
+      : `rgba(235,240,255,${0.7 * a})`;
+    ctx.beginPath();
+    ctx.arc(pos.x + f.off * Math.sin(f.p * Math.PI) + wob * 0.3, pos.y + wob * 0.2, f.size, 0, TAU);
+    ctx.fill();
+  }
+}
+
+function drawHeart(t, dt) {
+  const h = heart();
+  const phase = (t * 1.0) % 1;
+  const pulse = Math.exp(-Math.pow(phase - 0.14, 2) / 0.0035)
+              + 0.55 * Math.exp(-Math.pow(phase - 0.34, 2) / 0.006);
+  const scale = 1 + 0.09 * pulse;
+  if (phase < prevBeatPhase) {
+    ripples.push({ r: h.s * 0.95, a: 0.45 }); // 每次心跳泛起涟漪
+    if (ripples.length > 6) ripples.shift();
+  }
+  prevBeatPhase = phase;
+
+  // 涟漪
+  for (let i = ripples.length - 1; i >= 0; i--) {
+    const rp = ripples[i];
+    rp.r += dt * 110; rp.a -= dt * 0.55;
+    if (rp.a <= 0) { ripples.splice(i, 1); continue; }
+    ctx.strokeStyle = `rgba(255,130,155,${rp.a})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(h.x, h.y, rp.r, 0, TAU); ctx.stroke();
+  }
+
+  // 心体
+  ctx.save();
+  ctx.translate(h.x, h.y); ctx.scale(scale, scale); ctx.translate(-h.x, -h.y);
+  const glow = ctx.createRadialGradient(h.x, h.y, h.s * 0.2, h.x, h.y, h.s * 2.4);
+  glow.addColorStop(0, `rgba(255,90,120,${0.35 + 0.18 * pulse})`);
+  glow.addColorStop(1, 'rgba(255,90,120,0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(h.x - h.s * 2.4, h.y - h.s * 2.4, h.s * 4.8, h.s * 4.8);
+
+  const body = ctx.createLinearGradient(h.x, h.y - h.s, h.x, h.y + h.s);
+  body.addColorStop(0, '#ff7d95');
+  body.addColorStop(0.55, '#f43f63');
+  body.addColorStop(1, '#c21445');
+  ctx.shadowColor = 'rgba(255,80,110,0.75)';
+  ctx.shadowBlur = 34 * scale;
+  heartPath(h.x, h.y, h.s);
+  ctx.fillStyle = body; ctx.fill();
+  ctx.shadowBlur = 0;
+  // 高光
+  ctx.fillStyle = 'rgba(255,255,255,0.30)';
+  ctx.beginPath();
+  ctx.ellipse(h.x - h.s * 0.38, h.y - h.s * 0.38, h.s * 0.20, h.s * 0.12, -0.6, 0, TAU);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawPetals(t, dt) {
+  ctx.fillStyle = '#f7c873';
+  for (const p of petals) {
+    p.y += p.sp * dt;
+    if (p.y > H + 20) { p.y = -20; p.x0 = rand(0, W); }
+    const x = p.x0 + Math.sin(t * p.swSp + p.ph) * p.sw;
+    ctx.save();
+    ctx.translate(x, p.y); ctx.rotate(p.rot + t * p.vr);
+    ctx.globalAlpha = 0.75;
+    ctx.beginPath(); ctx.ellipse(0, 0, p.size, p.size * 0.55, 0, 0, TAU); ctx.fill();
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawDust(t, dt) {
+  for (const d of dust) {
+    d.x += d.vx * dt; d.y += d.vy * dt;
+    if (d.y < -10) { d.y = H + 10; d.x = rand(0, W); }
+    if (d.x < -10) d.x = W + 10; if (d.x > W + 10) d.x = -10;
+    const a = d.a * (0.6 + 0.4 * Math.sin(t * 1.3 + d.ph));
+    ctx.fillStyle = `rgba(255,225,170,${a})`;
+    ctx.beginPath(); ctx.arc(d.x, d.y, d.r, 0, TAU); ctx.fill();
+  }
+}
+
+function drawMeteors(t, dt) {
+  if (t > nextMeteorAt) {
+    nextMeteorAt = t + rand(8, 16);
+    const sx = rand(W * 0.55, W * 0.95), sy = rand(H * 0.05, H * 0.25);
+    meteors.push({ x: sx, y: sy, vx: rand(-520, -380), vy: rand(180, 260), life: 1 });
+  }
+  for (let i = meteors.length - 1; i >= 0; i--) {
+    const mt = meteors[i];
+    mt.life -= dt * 0.9;
+    mt.x += mt.vx * dt; mt.y += mt.vy * dt;
+    if (mt.life <= 0) { meteors.splice(i, 1); continue; }
+    const tx = mt.x - mt.vx * 0.28, ty = mt.y - mt.vy * 0.28;
+    const g = ctx.createLinearGradient(mt.x, mt.y, tx, ty);
+    g.addColorStop(0, `rgba(255,250,235,${0.9 * mt.life})`);
+    g.addColorStop(1, 'rgba(255,250,235,0)');
+    ctx.strokeStyle = g; ctx.lineWidth = 2; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(mt.x, mt.y); ctx.lineTo(tx, ty); ctx.stroke();
+  }
+}
+
+// 点击：放飞一盏心灯
+function releaseLantern(x, y) {
+  if (lanterns.length > 24) lanterns.shift();
+  lanterns.push({ x, y, vy: rand(38, 66), ph: rand(0, TAU), life: 1, s: rand(7, 12) });
+  if (!hintHidden) { hintHidden = true; hintEl.classList.add('gone'); }
+}
+function drawLanterns(t, dt) {
+  const m = moon();
+  for (let i = lanterns.length - 1; i >= 0; i--) {
+    const L = lanterns[i];
+    L.y -= L.vy * dt;
+    L.x += Math.sin(t * 1.8 + L.ph) * 22 * dt;
+    L.life -= dt * 0.09;
+    if (L.life <= 0 || L.y < m.y - m.r * 0.5) { lanterns.splice(i, 1); continue; }
+    const fade = clamp(L.life * 2, 0, 1) * clamp((L.y - (m.y - m.r)) / (H * 0.2) + 0.4, 0, 1);
+    const g = ctx.createRadialGradient(L.x, L.y, 0, L.x, L.y, L.s * 3);
+    g.addColorStop(0, `rgba(255,150,170,${0.5 * fade})`);
+    g.addColorStop(1, 'rgba(255,150,170,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(L.x - L.s * 3, L.y - L.s * 3, L.s * 6, L.s * 6);
+    heartPath(L.x, L.y, L.s);
+    ctx.fillStyle = `rgba(255,120,150,${0.9 * fade})`;
+    ctx.fill();
+  }
+}
+
+function drawVignette() {
+  const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35,
+    W / 2, H / 2, Math.max(W, H) * 0.75);
+  g.addColorStop(0, 'rgba(0,0,8,0)');
+  g.addColorStop(1, 'rgba(0,0,10,0.5)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function drawCaption(t) {
+  const a = clamp((t - 1.2) / 3, 0, 0.8);
+  if (a <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.font = `500 ${Math.max(13, W * 0.017)}px "Noto Serif SC", "Songti SC", serif`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  try { ctx.letterSpacing = '6px'; } catch (e) {}
+  ctx.fillStyle = '#f2e4c8';
+  ctx.shadowColor = 'rgba(255,200,120,0.4)'; ctx.shadowBlur = 12;
+  ctx.fillText('但愿人长久 · 千里共婵娟', W / 2, H * 0.955);
+  ctx.restore();
+}
+
+// ---------- 主循环 ----------
+let lastT = 0;
+function frame(nowMs) {
+  const t = nowMs / 1000;
+  const dt = clamp(t - lastT, 0, 0.05);
+  lastT = t;
+  drawSky();
+  drawStars(t);
+  drawWatermark(t);
+  drawMoon(t);
+  drawMountains();
+  drawGround(t);
+  drawRibbons(t);
+  drawFlow(t, dt);
+  drawHeart(t, dt);
+  drawPetals(t, dt);
+  drawDust(t, dt);
+  drawMeteors(t, dt);
+  drawLanterns(t, dt);
+  drawVignette();
+  drawCaption(t);
+  requestAnimationFrame(frame);
+}
+
+canvas.addEventListener('pointerdown', (e) => {
+  const r = canvas.getBoundingClientRect();
+  releaseLantern(e.clientX - r.left, e.clientY - r.top);
+});
+window.addEventListener('resize', resize);
+setTimeout(() => { if (!hintHidden) { hintHidden = true; hintEl.classList.add('gone'); } }, 9000);
+
+resize();
+if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  lastT = 6; frame(6000); // 只渲染一帧静态画面
+} else {
+  requestAnimationFrame((ms) => { lastT = ms / 1000; frame(ms); });
+}
+</script>
+</body>
+</html>

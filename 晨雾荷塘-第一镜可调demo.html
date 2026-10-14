@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>晨雾荷塘 · 第一镜可调 Demo</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; background: #0e0f0c;
+    font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", serif; }
+  #stage { position: fixed; inset: 0; display: block; }
+  .panel {
+    position: fixed; right: 14px; bottom: 14px; width: 248px;
+    background: rgba(16, 18, 14, 0.82); backdrop-filter: blur(10px);
+    border: 1px solid rgba(255,255,255,0.10); border-radius: 14px;
+    padding: 14px 16px 16px; color: #e8e4d8; user-select: none;
+    box-shadow: 0 8px 28px rgba(0,0,0,.45);
+  }
+  .panel h1 { font-size: 15px; letter-spacing: 2px; font-weight: 600; margin-bottom: 2px; }
+  .panel .sub { font-size: 11px; color: #9b968a; margin-bottom: 10px; letter-spacing: 1px; }
+  .row { margin: 10px 0; }
+  .row label { display: flex; justify-content: space-between; font-size: 12px;
+    margin-bottom: 4px; letter-spacing: 1px; }
+  .row label span.val { color: #f3c97b; font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; accent-color: #f3c97b; cursor: pointer; }
+  .btns { display: flex; gap: 8px; margin-top: 12px; }
+  button {
+    flex: 1; border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.06);
+    color: #e8e4d8; border-radius: 9px; padding: 8px 0; font-size: 12px;
+    letter-spacing: 2px; cursor: pointer; transition: background .2s;
+  }
+  button:hover { background: rgba(243,201,123,.18); border-color: rgba(243,201,123,.5); }
+  .hint { position: fixed; left: 14px; bottom: 14px; font-size: 11px; color: rgba(232,228,216,.55);
+    letter-spacing: 1px; pointer-events: none; }
+  @media (max-width: 640px) { .panel { width: 200px; } }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div class="panel">
+  <h1>晨 雾 荷 塘</h1>
+  <div class="sub">《小蝌蚪找妈妈》· 第一镜可调 Demo</div>
+  <div class="row">
+    <label>雾气 <span class="val" id="vMist">55</span></label>
+    <input type="range" id="sMist" min="0" max="100" value="55">
+  </div>
+  <div class="row">
+    <label>涟漪 <span class="val" id="vRip">45</span></label>
+    <input type="range" id="sRip" min="0" max="100" value="45">
+  </div>
+  <div class="row">
+    <label>晨光 <span class="val" id="vSun">60</span></label>
+    <input type="range" id="sSun" min="0" max="100" value="60">
+  </div>
+  <div class="row">
+    <label>微风 <span class="val" id="vWind">35</span></label>
+    <input type="range" id="sWind" min="0" max="100" value="35">
+  </div>
+  <div class="btns">
+    <button id="bSeed">换一幅</button>
+    <button id="bShot">截图保存</button>
+  </div>
+</div>
+<div class="hint">单文件零依赖 · 水墨靠程序生成 · 流动靠代码</div>
+
+<script>
+"use strict";
+/* ============================================================
+   晨雾荷塘 —— 水墨国风第一镜可调 Demo
+   思路：静帧结构用程序化水墨笔法绘制，雾/水/光三层用
+   时间函数流动起来。所有参数暴露为滑杆，可截图做分镜基准。
+   ============================================================ */
+
+const canvas = document.getElementById('stage');
+const ctx = canvas.getContext('2d');
+let W = 0, H = 0, DPR = 1;
+
+const P = { mist: 55, rip: 45, sun: 60, wind: 35 };   // 用户可调参数
+let seed = 20260928;
+let scene = null;
+
+/* ---------- 可复现的伪随机 ---------- */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/* 一维值噪声（山体轮廓 / 雾流动用） */
+function makeNoise1D(rand) {
+  const perm = [];
+  for (let i = 0; i < 256; i++) perm[i] = rand();
+  return function (x) {
+    const xi = Math.floor(x), xf = x - xi;
+    const a = perm[((xi) % 256 + 256) % 256], b = perm[((xi + 1) % 256 + 256) % 256];
+    const u = xf * xf * (3 - 2 * xf);
+    return a + (b - a) * u;
+  };
+}
+
+/* ---------- 场景生成（随种子重新布局） ---------- */
+function buildScene() {
+  const rand = mulberry32(seed);
+  const n1 = makeNoise1D(rand);
+
+  // 远山：三层，越远越淡
+  const mountains = [];
+  for (let layer = 0; layer < 3; layer++) {
+    const baseY = H * (0.30 + layer * 0.075);
+    const amp = H * (0.10 - layer * 0.022);
+    const freq = 1.6 + layer * 1.1 + rand() * 0.7;
+    const off = rand() * 10;
+    mountains.push({ baseY, amp, freq, off, n1 });
+  }
+
+  // 荷叶
+  const leaves = [];
+  const nLeaves = 9 + Math.floor(rand() * 6);
+  for (let i = 0; i < nLeaves; i++) {
+    leaves.push({
+      x: rand() * W, y: H * (0.55 + rand() * 0.38),
+      r: 26 + rand() * 66, rot: rand() * Math.PI * 2,
+      phase: rand() * Math.PI * 2, shade: rand()
+    });
+  }
+  leaves.sort((a, b) => a.y - b.y);
+
+  // 荷花
+  const flowers = [];
+  const nFlowers = 2 + Math.floor(rand() * 3);
+  for (let i = 0; i < nFlowers; i++) {
+    flowers.push({
+      x: W * (0.15 + rand() * 0.7), y: H * (0.52 + rand() * 0.35),
+      s: 0.7 + rand() * 0.7, phase: rand() * Math.PI * 2
+    });
+  }
+
+  // 涟漪发射点
+  const rippleSeeds = [];
+  for (let i = 0; i < 10; i++) rippleSeeds.push({
+    x: rand() * W, y: H * (0.5 + rand() * 0.45),
+    t: rand() * 8, speed: 0.5 + rand() * 0.8
+  });
+
+  // 雾团
+  const mists = [];
+  for (let i = 0; i < 26; i++) mists.push({
+    x: rand() * W, y: H * (0.28 + rand() * 0.45),
+    r: 90 + rand() * 190, a: 0.05 + rand() * 0.10,
+    vx: 6 + rand() * 14, phase: rand() * Math.PI * 2
+  });
+
+  scene = { mountains, leaves, flowers, rippleSeeds, mists,
+            sunX: W * (0.62 + (rand() - 0.5) * 0.2), sunY: H * 0.30 };
+}
+
+/* ---------- 画布尺寸 ---------- */
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  buildScene();
+}
+window.addEventListener('resize', resize);
+
+/* ---------- 绘制：晨空 ---------- */
+function drawSky(t) {
+  const sunI = P.sun / 100;
+  const g = ctx.createLinearGradient(0, 0, 0, H * 0.55);
+  g.addColorStop(0, '#2b2f28');
+  g.addColorStop(0.45, '#565a4e');
+  g.addColorStop(0.8, '#a89a7d');
+  g.addColorStop(1, '#d9b67e');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H * 0.58);
+
+  // 日晕
+  const sx = scene.sunX, sy = scene.sunY;
+  const glow = ctx.createRadialGradient(sx, sy, 0, sx, sy, H * 0.34);
+  glow.addColorStop(0, `rgba(255,236,190,${0.55 * sunI})`);
+  glow.addColorStop(0.4, `rgba(255,220,160,${0.22 * sunI})`);
+  glow.addColorStop(1, 'rgba(255,220,160,0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, W, H * 0.6);
+
+  // 日轮
+  ctx.beginPath();
+  ctx.arc(sx, sy, H * 0.035 * (0.6 + 0.4 * sunI), 0, Math.PI * 2);
+  ctx.fillStyle = `rgba(255,244,214,${0.85 * sunI})`;
+  ctx.fill();
+}
+
+/* ---------- 绘制：远山（水墨三叠） ---------- */
+function drawMountains() {
+  const tones = [
+    { c: 'rgba(120,128,116,0.35)', lw: 26 },
+    { c: 'rgba(96,104,94,0.45)', lw: 22 },
+    { c: 'rgba(64,72,62,0.60)', lw: 18 }
+  ];
+  scene.mountains.forEach((m, i) => {
+    ctx.beginPath();
+    for (let x = 0; x <= W; x += 6) {
+      const y = m.baseY - m.n1(x / W * m.freq + m.off) * m.amp;
+      x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.lineTo(W, H * 0.62); ctx.lineTo(0, H * 0.62); ctx.closePath();
+    ctx.fillStyle = tones[i].c;
+    ctx.fill();
+    // 皴笔：沿山脊加一条淡墨线
+    ctx.beginPath();
+    for (let x = 0; x <= W; x += 6) {
+      const y = m.baseY - m.n1(x / W * m.freq + m.off) * m.amp;
+      x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = `rgba(52,58,50,${0.25 + i * 0.1})`;
+    ctx.lineWidth = 1.5; ctx.stroke();
+  });
+}
+
+/* ---------- 绘制：水面 ---------- */
+function drawWater(t) {
+  const g = ctx.createLinearGradient(0, H * 0.5, 0, H);
+  g.addColorStop(0, '#8b8474');
+  g.addColorStop(0.25, '#5d6152');
+  g.addColorStop(0.6, '#3a4038');
+  g.addColorStop(1, '#23261f');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, H * 0.5, W, H * 0.5);
+
+  // 水平波纹：亮丝
+  const ripI = P.rip / 100, windI = P.wind / 100;
+  const lines = 26;
+  for (let i = 0; i < lines; i++) {
+    const yy = H * 0.53 + (i / lines) * H * 0.45;
+    const depth = (yy - H * 0.5) / (H * 0.5);
+    const drift = Math.sin(t * (0.4 + windI) + i * 1.7) * (14 + windI * 26);
+    ctx.beginPath();
+    for (let x = -20; x <= W + 20; x += 14) {
+      const wob = Math.sin(x * 0.02 + t * (0.8 + windI * 1.6) + i) * (2 + ripI * 5);
+      const y = yy + wob;
+      x === -20 ? ctx.moveTo(x + drift * depth, y) : ctx.lineTo(x + drift * depth, y);
+    }
+    ctx.strokeStyle = `rgba(230,220,190,${0.03 + ripI * 0.10 * depth})`;
+    ctx.lineWidth = 1 + depth * 1.6;
+    ctx.stroke();
+  }
+
+  // 晨光在水面的金色碎光
+  const sunI = P.sun / 100;
+  if (sunI > 0.02) {
+    const sx = scene.sunX;
+    for (let i = 0; i < 40; i++) {
+      const yy = H * (0.55 + Math.random() * 0.4);
+      const spread = (yy - H * 0.5) / H;
+      const xx = sx + (Math.random() - 0.5) * (60 + spread * W * 0.5);
+      const ww = 6 + Math.random() * 40 * spread;
+      const tw = 0.5 + 0.5 * Math.sin(t * 3 + i * 2.1);
+      ctx.fillStyle = `rgba(255,214,140,${0.10 * sunI * tw * (0.3 + spread)})`;
+      ctx.fillRect(xx - ww / 2, yy, ww, 1.6);
+    }
+  }
+
+  // 涟漪圈
+  if (ripI > 0.02) {
+    scene.rippleSeeds.forEach(s => {
+      const cycle = ((t * s.speed + s.t) % 8) / 8;
+      const r = 8 + cycle * (60 + ripI * 90);
+      const alpha = (1 - cycle) * 0.28 * ripI;
+      ctx.beginPath();
+      ctx.ellipse(s.x, s.y, r * 1.9, r * 0.5, 0, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(235,225,200,${alpha})`;
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.ellipse(s.x, s.y, r * 1.9 * 0.62, r * 0.5 * 0.62, 0, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(235,225,200,${alpha * 0.7})`;
+      ctx.stroke();
+    });
+  }
+}
+
+/* ---------- 绘制：荷叶 ---------- */
+function drawLeaf(l, t) {
+  const windI = P.wind / 100;
+  const bob = Math.sin(t * 1.2 + l.phase) * (1 + windI * 3);
+  const sway = Math.sin(t * 0.7 + l.phase) * (2 + windI * 8);
+  ctx.save();
+  ctx.translate(l.x + sway, l.y + bob);
+  ctx.rotate(l.rot);
+
+  const r = l.r;
+  // 叶盘（缺口圆）
+  const grad = ctx.createRadialGradient(0, 0, r * 0.1, 0, 0, r);
+  const dark = 30 + l.shade * 30;
+  grad.addColorStop(0, `rgb(${52 + dark * 0.4},${72 + dark * 0.4},${50 + dark * 0.3})`);
+  grad.addColorStop(1, `rgb(${28},${40},${30})`);
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.arc(0, 0, r, 0.28, Math.PI * 2 - 0.28);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // 叶脉
+  ctx.strokeStyle = 'rgba(200,220,170,0.28)';
+  ctx.lineWidth = 1;
+  for (let k = 0; k < 9; k++) {
+    const a = 0.35 + (k / 8) * (Math.PI * 2 - 0.7);
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.quadraticCurveTo(Math.cos(a) * r * 0.5, Math.sin(a) * r * 0.5,
+                         Math.cos(a) * r * 0.92, Math.sin(a) * r * 0.92);
+    ctx.stroke();
+  }
+  // 叶缘淡墨
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0.28, Math.PI * 2 - 0.28);
+  ctx.strokeStyle = 'rgba(20,26,20,0.5)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // 叶面水珠高光
+  ctx.beginPath();
+  ctx.ellipse(-r * 0.3, -r * 0.25, r * 0.16, r * 0.1, -0.5, 0, Math.PI * 2);
+  ctx.fillStyle = `rgba(255,250,230,${0.10 + 0.12 * (P.sun / 100)})`;
+  ctx.fill();
+  ctx.restore();
+
+  // 水中倒影
+  ctx.save();
+  ctx.globalAlpha = 0.16;
+  ctx.beginPath();
+  ctx.ellipse(l.x + sway, l.y + r * 0.7, r * 0.9, r * 0.28, 0, 0, Math.PI * 2);
+  ctx.fillStyle = '#1c211c';
+  ctx.fill();
+  ctx.restore();
+}
+
+/* ---------- 绘制：荷花 ---------- */
+function drawFlower(f, t) {
+  const bob = Math.sin(t * 1.1 + f.phase) * 2;
+  const s = f.s;
+  ctx.save();
+  ctx.translate(f.x, f.y + bob);
+
+  // 花瓣：三层
+  const petal = (w, h, rot, color, alpha) => {
+    ctx.save(); ctx.rotate(rot);
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.bezierCurveTo(w * 0.6, -h * 0.3, w * 0.5, -h * 0.9, 0, -h);
+    ctx.bezierCurveTo(-w * 0.5, -h * 0.9, -w * 0.6, -h * 0.3, 0, 0);
+    ctx.closePath();
+    ctx.fillStyle = color; ctx.globalAlpha = alpha; ctx.fill();
+    ctx.globalAlpha = 1; ctx.restore();
+  };
+  for (let k = 0; k < 6; k++) petal(34 * s, 62 * s, (k / 6) * Math.PI * 2, '#c98a9d', 0.85);
+  for (let k = 0; k < 6; k++) petal(28 * s, 52 * s, (k / 6) * Math.PI * 2 + 0.5, '#ddb0bd', 0.9);
+  for (let k = 0; k < 5; k++) petal(20 * s, 40 * s, (k / 5) * Math.PI * 2 + 0.2, '#f0d3da', 0.95);
+  // 花蕊
+  ctx.beginPath(); ctx.arc(0, -14 * s, 7 * s, 0, Math.PI * 2);
+  ctx.fillStyle = '#f3c97b'; ctx.fill();
+
+  // 花茎没入水中
+  ctx.strokeStyle = 'rgba(52,72,52,0.8)'; ctx.lineWidth = 5 * s;
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, 40 * s); ctx.stroke();
+  ctx.restore();
+}
+
+/* ---------- 绘制：雾（多层漂移，月流同款逻辑） ---------- */
+function drawMist(t) {
+  const mistI = P.mist / 100, windI = P.wind / 100;
+  if (mistI < 0.02) return;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  scene.mists.forEach(m => {
+    const x = ((m.x + t * m.vx * (0.4 + windI * 1.6) + m.phase * 40) % (W + m.r * 2)) - m.r;
+    const y = m.y + Math.sin(t * 0.35 + m.phase) * 18;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, m.r);
+    g.addColorStop(0, `rgba(226,222,210,${m.a * mistI})`);
+    g.addColorStop(1, 'rgba(226,222,210,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(x - m.r, y - m.r, m.r * 2, m.r * 2);
+  });
+  ctx.restore();
+
+  // 贴水面的雾带
+  const bandY = H * 0.52;
+  const bg = ctx.createLinearGradient(0, bandY - 40, 0, bandY + 60);
+  bg.addColorStop(0, 'rgba(230,226,214,0)');
+  bg.addColorStop(0.5, `rgba(230,226,214,${0.16 * mistI})`);
+  bg.addColorStop(1, 'rgba(230,226,214,0)');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, bandY - 40, W, 100);
+}
+
+/* ---------- 绘制：晨光光束 ---------- */
+function drawLightRays(t) {
+  const sunI = P.sun / 100;
+  if (sunI < 0.02) return;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const sx = scene.sunX, sy = scene.sunY;
+  for (let i = 0; i < 5; i++) {
+    const ang = Math.PI * 0.62 + i * 0.16 + Math.sin(t * 0.2 + i) * 0.02;
+    const len = H * 0.75;
+    const grad = ctx.createLinearGradient(sx, sy, sx + Math.cos(ang) * len, sy + Math.sin(ang) * len);
+    grad.addColorStop(0, `rgba(255,226,160,${0.10 * sunI})`);
+    grad.addColorStop(1, 'rgba(255,226,160,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.arc(sx, sy, len, ang - 0.03, ang + 0.03);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/* ---------- 主循环 ---------- */
+let start = performance.now();
+function frame(now) {
+  const t = (now - start) / 1000;
+  ctx.clearRect(0, 0, W, H);
+  drawSky(t);
+  drawMountains();
+  drawWater(t);
+  scene.leaves.forEach(l => drawLeaf(l, t));
+  scene.flowers.forEach(f => drawFlower(f, t));
+  drawLightRays(t);
+  drawMist(t);
+
+  // 暗角 + 宣纸质感
+  const vg = ctx.createRadialGradient(W/2, H/2, Math.min(W,H)*0.35, W/2, H/2, Math.max(W,H)*0.75);
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, 'rgba(10,10,8,0.42)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, W, H);
+
+  requestAnimationFrame(frame);
+}
+
+/* ---------- UI 绑定 ---------- */
+function bindSlider(id, valId, key) {
+  const s = document.getElementById(id), v = document.getElementById(valId);
+  s.addEventListener('input', () => { P[key] = +s.value; v.textContent = s.value; });
+}
+bindSlider('sMist', 'vMist', 'mist');
+bindSlider('sRip', 'vRip', 'rip');
+bindSlider('sSun', 'vSun', 'sun');
+bindSlider('sWind', 'vWind', 'wind');
+
+document.getElementById('bSeed').addEventListener('click', () => {
+  seed = Math.floor(Math.random() * 1e9);
+  buildScene();
+});
+document.getElementById('bShot').addEventListener('click', () => {
+  const a = document.createElement('a');
+  a.download = '晨雾荷塘-分镜基准.png';
+  a.href = canvas.toDataURL('image/png');
+  a.click();
+});
+
+resize();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

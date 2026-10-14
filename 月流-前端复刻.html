@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>月流 · 前端复刻</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    background:#04060b;display:flex;align-items:center;justify-content:center;min-height:100vh;
+    font-family:"Songti SC","STSong","Noto Serif SC",serif;
+  }
+  .frame{
+    position:relative;width:min(94vw,calc(94vh*0.75));aspect-ratio:3/4;background:#000;overflow:hidden;
+    box-shadow:0 40px 120px rgba(0,0,0,.75),0 0 90px rgba(70,110,180,.08);
+  }
+  canvas{display:block;width:100%;height:100%}
+  .t{
+    position:absolute;color:#e9dfc4;writing-mode:vertical-rl;letter-spacing:.45em;
+    text-shadow:0 2px 14px rgba(0,0,0,.8);opacity:0;animation:fadein 2.6s ease forwards;user-select:none;pointer-events:none;
+  }
+  .title{top:5.5%;right:6%;font-size:clamp(26px,5.4vw,44px);animation-delay:.4s}
+  .poem{top:6%;left:6.5%;font-size:clamp(13px,2.4vw,20px);line-height:2.4;animation-delay:1.5s}
+  .poem span{display:block}
+  @keyframes fadein{to{opacity:.85}}
+</style>
+</head>
+<body>
+<div class="frame">
+  <canvas id="stage"></canvas>
+  <div class="t title">月流</div>
+  <div class="t poem"><span>流水今日</span><span>明月前身</span></div>
+</div>
+<script>
+/* ============================================================
+   月流 · 前端复刻
+   技术栈：单文件 Canvas 2D，无依赖
+   分层：静态水墨底图(预渲染) → 月亮呼吸光 → 粒子光流 → 光斑 →
+        甩光 burst → 纸纹颗粒 → HTML 竖排诗句
+   ============================================================ */
+const LW = 900, LH = 1200;                 // 逻辑分辨率（3:4 竖构图）
+const canvas = document.getElementById('stage');
+const ctx = canvas.getContext('2d');
+const dpr = Math.min(2, window.devicePixelRatio || 1);
+canvas.width = LW * dpr; canvas.height = LH * dpr;
+ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+const R = (a, b) => a + Math.random() * (b - a);
+const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+
+const moon = { x: LW * 0.66, y: LH * 0.235, r: LH * 0.105 };
+
+/* ---------- 1. 发光粒子贴图（预渲染，drawImage 比每帧画渐变快得多） ---------- */
+function glowSprite(stops) {
+  const s = document.createElement('canvas'); s.width = s.height = 96;
+  const c = s.getContext('2d');
+  const g = c.createRadialGradient(48, 48, 0, 48, 48, 48);
+  stops.forEach(([o, col]) => g.addColorStop(o, col));
+  c.fillStyle = g; c.fillRect(0, 0, 96, 96);
+  return s;
+}
+const SPRITES = [
+  glowSprite([[0,'rgba(255,246,224,1)'],[0.25,'rgba(255,226,170,0.55)'],[0.6,'rgba(255,200,120,0.16)'],[1,'rgba(255,190,110,0)']]),
+  glowSprite([[0,'rgba(255,236,190,1)'],[0.3,'rgba(255,205,130,0.5)'],[0.65,'rgba(255,180,100,0.14)'],[1,'rgba(255,170,90,0)']]),
+  glowSprite([[0,'rgba(255,252,240,1)'],[0.35,'rgba(255,244,214,0.4)'],[1,'rgba(255,230,180,0)']]),
+];
+const haloSprite = glowSprite([[0,'rgba(255,220,160,0.5)'],[0.5,'rgba(255,200,130,0.18)'],[1,'rgba(255,190,120,0)']]);
+
+/* ---------- 2. 静态水墨底图（只画一次） ---------- */
+const bg = document.createElement('canvas'); bg.width = LW * dpr; bg.height = LH * dpr;
+const b = bg.getContext('2d'); b.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+function ridge(c, baseY, amp, top, bottom) {
+  c.beginPath(); c.moveTo(-20, LH + 20); c.lineTo(-20, baseY + R(-amp, amp) * 0.3);
+  let x = -20;
+  while (x < LW + 20) { x += R(26, 86); c.lineTo(x, baseY + R(-amp, amp)); }
+  c.lineTo(LW + 20, LH + 20); c.closePath();
+  const g = c.createLinearGradient(0, baseY - amp, 0, LH);
+  g.addColorStop(0, top); g.addColorStop(1, bottom);
+  c.fillStyle = g; c.fill();
+}
+function inkStrokes() {
+  // 右侧山脊的竖向笔触（水墨质感）
+  for (let i = 0; i < 70; i++) {
+    const x = R(LW * 0.5, LW), y0 = R(LH * 0.66, LH * 0.78), len = R(30, 120);
+    b.strokeStyle = Math.random() < 0.7 ? `rgba(0,0,0,${R(0.10,0.28)})` : `rgba(70,100,150,${R(0.05,0.12)})`;
+    b.lineWidth = R(1.5, 5);
+    b.beginPath(); b.moveTo(x, y0); b.lineTo(x + R(-6, 6), y0 + len); b.stroke();
+  }
+  // 横向晕染
+  for (let i = 0; i < 8; i++) {
+    const y = R(LH * 0.62, LH * 0.95), h = R(10, 28);
+    const g = b.createLinearGradient(0, y, 0, y + h);
+    g.addColorStop(0, 'rgba(0,0,0,0)');
+    g.addColorStop(0.5, `rgba(0,0,0,${R(0.08,0.2)})`);
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    b.fillStyle = g; b.fillRect(0, y, LW, h);
+  }
+}
+(function paintBackground() {
+  // 夜空
+  let g = b.createLinearGradient(0, 0, LW * 0.35, LH);
+  g.addColorStop(0, '#0e1e36'); g.addColorStop(0.45, '#0a1425'); g.addColorStop(1, '#04070d');
+  b.fillStyle = g; b.fillRect(0, 0, LW, LH);
+  // 星云微光
+  for (let i = 0; i < 5; i++) {
+    const x = R(0, LW), y = R(0, LH * 0.5), r = R(140, 320);
+    const ng = b.createRadialGradient(x, y, 0, x, y, r);
+    ng.addColorStop(0, 'rgba(60,100,160,0.10)'); ng.addColorStop(1, 'rgba(60,100,160,0)');
+    b.fillStyle = ng; b.beginPath(); b.arc(x, y, r, 0, 7); b.fill();
+  }
+  // 星点
+  for (let i = 0; i < 150; i++) {
+    b.fillStyle = `rgba(220,232,255,${R(0.12,0.55)})`;
+    b.beginPath(); b.arc(R(0, LW), R(0, LH * 0.62), R(0.6, 2.1), 0, 7); b.fill();
+  }
+  // 远山 / 近山剪影
+  ridge(b, LH * 0.60, LH * 0.09, '#101c31', '#070c16');
+  ridge(b, LH * 0.735, LH * 0.11, '#070d17', '#030509');
+  inkStrokes();
+  // 月亮光晕 + 横向拉丝眩光（additive）
+  b.save(); b.globalCompositeOperation = 'lighter';
+  let mg = b.createRadialGradient(moon.x, moon.y, moon.r * 0.5, moon.x, moon.y, moon.r * 4.2);
+  mg.addColorStop(0, 'rgba(255,222,150,0.34)'); mg.addColorStop(0.4, 'rgba(255,205,130,0.12)'); mg.addColorStop(1, 'rgba(255,200,120,0)');
+  b.fillStyle = mg; b.beginPath(); b.arc(moon.x, moon.y, moon.r * 4.2, 0, 7); b.fill();
+  const sx = moon.x;
+  let sg = b.createLinearGradient(sx - LW * 0.42, 0, sx + LW * 0.1, 0);
+  sg.addColorStop(0, 'rgba(255,215,150,0)'); sg.addColorStop(0.81, 'rgba(255,224,170,0.5)'); sg.addColorStop(1, 'rgba(255,230,190,0)');
+  b.fillStyle = sg; b.fillRect(sx - LW * 0.42, moon.y - 1.4, LW * 0.52, 2.8);
+  let sg2 = b.createLinearGradient(sx - LW * 0.42, 0, sx + LW * 0.1, 0);
+  sg2.addColorStop(0, 'rgba(255,215,150,0)'); sg2.addColorStop(0.81, 'rgba(255,220,165,0.10)'); sg2.addColorStop(1, 'rgba(255,230,190,0)');
+  b.fillStyle = sg2; b.fillRect(sx - LW * 0.42, moon.y - 11, LW * 0.52, 22);
+  b.restore();
+  // 月亮本体
+  let md = b.createRadialGradient(moon.x - moon.r * 0.25, moon.y - moon.r * 0.25, moon.r * 0.1, moon.x, moon.y, moon.r);
+  md.addColorStop(0, '#fffdf4'); md.addColorStop(0.75, '#ffedc4'); md.addColorStop(1, '#f7d996');
+  b.fillStyle = md; b.beginPath(); b.arc(moon.x, moon.y, moon.r, 0, 7); b.fill();
+  b.fillStyle = 'rgba(205,180,140,0.10)';   // 淡淡的环形山
+  for (let i = 0; i < 9; i++) {
+    const a = R(0, Math.PI * 2), rr = R(0, moon.r * 0.7);
+    b.beginPath(); b.arc(moon.x + Math.cos(a) * rr, moon.y + Math.sin(a) * rr, R(3, 11), 0, 7); b.fill();
+  }
+  // 暗角
+  const vg = b.createRadialGradient(LW/2, LH*0.42, LH*0.25, LW/2, LH*0.5, LH*0.75);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,0.5)');
+  b.fillStyle = vg; b.fillRect(0, 0, LW, LH);
+})();
+
+/* ---------- 3. 纸纹颗粒 ---------- */
+const grain = document.createElement('canvas'); grain.width = grain.height = 160;
+(function () {
+  const c = grain.getContext('2d'), id = c.createImageData(160, 160);
+  for (let i = 0; i < id.data.length; i += 4) {
+    const v = 118 + (Math.random() * 20 | 0);
+    id.data[i] = id.data[i+1] = id.data[i+2] = v; id.data[i+3] = 255;
+  }
+  c.putImageData(id, 0, 0);
+})();
+const grainPat = ctx.createPattern(grain, 'repeat');
+
+/* ---------- 4. 月流：贝塞尔流线 + 粒子 ---------- */
+function makeStream() {
+  const a = R(30, 150) * Math.PI / 180;              // 月亮下缘发射
+  const x0 = moon.x + Math.cos(a) * moon.r * 0.92;
+  const y0 = moon.y + Math.sin(a) * moon.r * 0.92;
+  const x1 = LW * R(0.08, 0.92);                     // 底部铺开
+  const y1 = LH * R(0.97, 1.0);
+  const cx = (x0 + x1) / 2 - LW * 0.06 + R(-0.125, 0.125) * LW;
+  const cy = (y0 + y1) / 2 + R(-0.04, 0.04) * LH;
+  return { x0, y0, x1, y1, cx, cy, speed: R(0.10, 0.24) };
+}
+const streams = []; for (let i = 0; i < 30; i++) streams.push(makeStream());
+
+const tmp = { x: 0, y: 0, dx: 0, dy: 0 };
+function streamPos(s, t) {
+  const u = 1 - t;
+  tmp.x = u*u*s.x0 + 2*u*t*s.cx + t*t*s.x1;
+  tmp.y = u*u*s.y0 + 2*u*t*s.cy + t*t*s.y1;
+  tmp.dx = 2*u*(s.cx - s.x0) + 2*t*(s.x1 - s.cx);
+  tmp.dy = 2*u*(s.cy - s.y0) + 2*t*(s.y1 - s.cy);
+}
+function newFlow() {
+  const s = streams[(Math.random() * streams.length) | 0];
+  const node = Math.random() < 0.15;                 // 15% 是更亮的光斑节点
+  return {
+    s, t: Math.random() * 0.12, lateral: R(-9, 9),
+    speed: s.speed * R(0.7, 1.4),
+    size: node ? R(9, 18) : R(3, 8),
+    phase: R(0, 6.28), tw: R(1.2, 4.2),
+    alpha: node ? R(0.7, 0.95) : R(0.4, 0.8),
+    sprite: SPRITES[(Math.random() * 3) | 0],
+    swayAmp: R(5, 16),
+  };
+}
+const flow = []; for (let i = 0; i < 520; i++) flow.push(newFlow());
+
+function updateDrawFlow(now, dt) {
+  for (const p of flow) {
+    p.t += dt * p.speed;
+    if (p.t >= 1) { Object.assign(p, newFlow()); continue; }
+    streamPos(p.s, p.t);
+    const l = Math.hypot(tmp.dx, tmp.dy) || 1;
+    const sway = Math.sin(now * 0.0011 * p.tw + p.phase) * p.swayAmp * p.t;
+    const off = p.lateral + sway;
+    const x = tmp.x + (-tmp.dy / l) * off, y = tmp.y + (tmp.dx / l) * off;
+    const twk = 0.55 + 0.45 * Math.sin(now * 0.0022 * p.tw + p.phase * 1.7);  // 呼吸闪烁
+    const a = p.alpha * twk * smooth(0, 0.07, p.t) * (1 - smooth(0.78, 1, p.t));
+    if (a < 0.012) continue;
+    const sz = p.size * (0.75 + 0.5 * twk);
+    ctx.globalAlpha = a;
+    ctx.drawImage(p.sprite, x - sz/2, y - sz/2, sz, sz);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* ---------- 5. 大光斑（沿流线缓慢漂移） ---------- */
+function newOrb() {
+  return { s: streams[(Math.random() * streams.length) | 0], t: Math.random(),
+           speed: R(0.02, 0.05), size: R(15, 34), phase: R(0, 6.28), alpha: R(0.2, 0.42) };
+}
+const orbs = []; for (let i = 0; i < 34; i++) orbs.push(newOrb());
+function updateDrawOrbs(now, dt) {
+  for (const o of orbs) {
+    o.t += dt * o.speed;
+    if (o.t >= 1) { Object.assign(o, newOrb()); continue; }
+    streamPos(o.s, o.t);
+    const l = Math.hypot(tmp.dx, tmp.dy) || 1;
+    const sway = Math.sin(now * 0.0008 + o.phase) * 10 * o.t;
+    const x = tmp.x + (-tmp.dy / l) * sway, y = tmp.y + (tmp.dx / l) * sway;
+    const br = 0.55 + 0.45 * Math.sin(now * 0.0013 + o.phase * 2);
+    const a = o.alpha * br * smooth(0, 0.1, o.t) * (1 - smooth(0.75, 1, o.t));
+    if (a < 0.01) continue;
+    ctx.globalAlpha = a;
+    ctx.drawImage(haloSprite, x - o.size/2, y - o.size/2, o.size, o.size);
+    const cs = o.size * 0.35;
+    ctx.globalAlpha = Math.min(1, a * 1.4);
+    ctx.drawImage(SPRITES[2], x - cs/2, y - cs/2, cs, cs);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* ---------- 6. 甩光：月亮定期向外抛洒光 streak ---------- */
+const bursts = []; let nextBurst = 2500;
+function fireBurst() {
+  for (let i = 0; i < 70; i++) {
+    const a = R(0, Math.PI * 2), sp = R(50, 240);
+    bursts.push({
+      x: moon.x + Math.cos(a) * moon.r * 0.95, y: moon.y + Math.sin(a) * moon.r * 0.95,
+      vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - R(10, 50),
+      life: 1, decay: R(0.45, 0.9), size: R(1.5, 4.5),
+    });
+  }
+}
+function updateDrawBursts(now, dt) {
+  nextBurst -= dt * 1000;
+  if (nextBurst <= 0) { fireBurst(); nextBurst = R(5000, 9000); }
+  ctx.lineCap = 'round';
+  for (let i = bursts.length - 1; i >= 0; i--) {
+    const q = bursts[i];
+    q.life -= dt * q.decay;
+    if (q.life <= 0) { bursts.splice(i, 1); continue; }
+    q.x += q.vx * dt; q.y += q.vy * dt;
+    const dr = 1 - 1.6 * dt; q.vx *= dr; q.vy *= dr;
+    const a = Math.max(0, q.life) * 0.85;
+    ctx.globalAlpha = a;
+    ctx.strokeStyle = `rgba(255,226,175,${a})`; ctx.lineWidth = q.size * 0.55;
+    ctx.beginPath(); ctx.moveTo(q.x - q.vx * 0.035, q.y - q.vy * 0.035); ctx.lineTo(q.x, q.y); ctx.stroke();
+    const hs = q.size * 3;
+    ctx.globalAlpha = a * 0.8;
+    ctx.drawImage(SPRITES[0], q.x - hs/2, q.y - hs/2, hs, hs);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* ---------- 7. 主循环 ---------- */
+const tstars = [];
+for (let i = 0; i < 36; i++) tstars.push({ x: R(0, LW), y: R(0, LH * 0.55), r: R(2, 5), ph: R(0, 6.28), spd: R(0.5, 2), a: R(0.4, 0.9) });
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+  ctx.drawImage(bg, 0, 0, LW, LH);
+
+  // 月亮呼吸光
+  const br = 0.72 + 0.28 * Math.sin(now * 0.0009);
+  ctx.globalCompositeOperation = 'lighter';
+  const bgd = ctx.createRadialGradient(moon.x, moon.y, moon.r, moon.x, moon.y, moon.r * 3.4);
+  bgd.addColorStop(0, `rgba(255,220,150,${0.16 * br})`); bgd.addColorStop(1, 'rgba(255,200,120,0)');
+  ctx.fillStyle = bgd; ctx.beginPath(); ctx.arc(moon.x, moon.y, moon.r * 3.4, 0, 7); ctx.fill();
+
+  // 闪烁的星
+  for (const st of tstars) {
+    const a = 0.15 + 0.5 * Math.abs(Math.sin(now * 0.001 * st.spd + st.ph));
+    ctx.globalAlpha = a * st.a;
+    ctx.drawImage(SPRITES[2], st.x - st.r, st.y - st.r, st.r * 2, st.r * 2);
+  }
+  ctx.globalAlpha = 1;
+
+  updateDrawFlow(now, dt);
+  updateDrawOrbs(now, dt);
+  updateDrawBursts(now, dt);
+
+  // 纸纹颗粒（每帧抖一下位置）
+  ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 0.05;
+  ctx.save(); ctx.translate(R(-8, 8), R(-8, 8));
+  ctx.fillStyle = grainPat; ctx.fillRect(-10, -10, LW + 20, LH + 20);
+  ctx.restore(); ctx.globalAlpha = 1;
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
