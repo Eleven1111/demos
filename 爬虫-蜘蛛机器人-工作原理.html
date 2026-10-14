@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🕷️ 蜘蛛爬虫 · 它是如何工作的</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: "PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    background:#070b16; color:#dbe6f5; min-height:100vh;
+    padding:18px;
+  }
+  header { text-align:center; margin-bottom:14px; }
+  header h1 { font-size:26px; letter-spacing:2px; }
+  header h1 .hl { color:#22d3ee; }
+  header p { color:#8fa3c4; font-size:13px; margin-top:6px; }
+  .toolbar {
+    display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:center;
+    margin-bottom:14px;
+  }
+  .toolbar input[type=text]{
+    background:#101830; border:1px solid #2b3a5e; color:#dbe6f5;
+    padding:8px 12px; border-radius:8px; width:260px; font-size:13px; outline:none;
+  }
+  .toolbar input[type=text]:focus{ border-color:#22d3ee; }
+  button {
+    background:linear-gradient(135deg,#0ea5b7,#2563eb); border:none; color:#fff;
+    padding:9px 18px; border-radius:8px; font-size:14px; cursor:pointer;
+    transition:transform .12s, box-shadow .12s;
+  }
+  button:hover{ transform:translateY(-1px); box-shadow:0 4px 16px rgba(34,211,238,.35); }
+  button.ghost{ background:#1a2440; border:1px solid #2b3a5e; }
+  .ctl { display:flex; align-items:center; gap:8px; font-size:13px; color:#8fa3c4;
+    background:#101830; border:1px solid #22304f; padding:7px 12px; border-radius:8px; }
+  .ctl input[type=range]{ accent-color:#22d3ee; }
+  .ctl b{ color:#22d3ee; min-width:34px; text-align:center; }
+  main { display:grid; grid-template-columns:1fr 330px; gap:14px; max-width:1280px; margin:0 auto; }
+  @media (max-width:900px){ main{ grid-template-columns:1fr; } }
+  .stage-wrap { position:relative; background:#0a1020; border:1px solid #1c2947;
+    border-radius:14px; overflow:hidden; }
+  canvas{ display:block; width:100%; height:600px; }
+  .legend{
+    position:absolute; left:12px; top:10px; display:flex; gap:12px; flex-wrap:wrap;
+    font-size:11px; color:#8fa3c4; background:rgba(10,16,32,.72);
+    padding:6px 12px; border-radius:8px; border:1px solid #1c2947; pointer-events:none;
+  }
+  .legend i{ display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:4px; }
+  aside{ display:flex; flex-direction:column; gap:14px; }
+  .card{ background:#0d1428; border:1px solid #1c2947; border-radius:14px; padding:14px; }
+  .card h3{ font-size:14px; color:#9fb4d8; margin-bottom:10px; letter-spacing:1px; }
+  #stages{ list-style:none; }
+  #stages li{
+    display:flex; gap:10px; align-items:flex-start; padding:8px 10px; border-radius:8px;
+    font-size:13px; color:#7d90b5; transition:all .25s; margin-bottom:4px;
+  }
+  #stages li .dot{
+    width:22px; height:22px; border-radius:50%; flex:none; display:flex; align-items:center;
+    justify-content:center; font-size:12px; background:#1a2440; border:1px solid #2b3a5e; color:#7d90b5;
+  }
+  #stages li.active{ background:rgba(34,211,238,.1); color:#eaf6ff; }
+  #stages li.active .dot{
+    background:#22d3ee; color:#06222a; border-color:#22d3ee;
+    box-shadow:0 0 12px rgba(34,211,238,.8);
+  }
+  #stageDesc{ font-size:12.5px; color:#a9bcd9; line-height:1.7; margin-top:8px;
+    background:#101a33; border-radius:8px; padding:10px 12px; min-height:64px; }
+  .stats{ display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .stat{ background:#101a33; border-radius:10px; padding:10px; text-align:center; }
+  .stat .v{ font-size:22px; font-weight:700; color:#22d3ee; font-family:monospace; }
+  .stat .k{ font-size:11px; color:#8fa3c4; margin-top:4px; }
+  .log-card{ flex:1; min-height:220px; display:flex; flex-direction:column; }
+  #log{ flex:1; overflow-y:auto; max-height:300px; font-size:12px; line-height:1.5;
+    font-family:ui-monospace,Menlo,Consolas,monospace; }
+  #log div{ padding:5px 8px; border-bottom:1px solid #141d36; color:#a9bcd9; word-break:break-all; }
+  #log div:first-child{ color:#eaf6ff; background:rgba(34,211,238,.06); }
+  #log::-webkit-scrollbar{ width:6px; }
+  #log::-webkit-scrollbar-thumb{ background:#2b3a5e; border-radius:3px; }
+  footer{ text-align:center; color:#5b6c8f; font-size:12px; margin-top:16px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🕷️ <span class="hl">蜘蛛爬虫</span> · 它是如何工作的</h1>
+  <p>看这只蜘蛛机器人沿着蛛网出发：请求 → 下载 → 解析 → 入库，一步步抓下整个网站</p>
+</header>
+
+<div class="toolbar">
+  <input type="text" id="seed" value="https://news.example.com/" placeholder="种子 URL">
+  <button id="startBtn">▶ 开始抓取</button>
+  <button id="resetBtn" class="ghost">↺ 重置</button>
+  <label class="ctl">速度 <input type="range" id="speed" min="0.5" max="3" step="0.5" value="1.5"><b id="speedV">1.5x</b></label>
+  <label class="ctl">抓取深度 <input type="range" id="depth" min="1" max="4" step="1" value="3"><b id="depthV">3</b></label>
+</div>
+
+<main>
+  <div class="stage-wrap">
+    <canvas id="cv"></canvas>
+    <div class="legend">
+      <span><i style="background:#f5c542"></i>待抓取</span>
+      <span><i style="background:#22d3ee"></i>抓取中</span>
+      <span><i style="background:#34d399"></i>已完成</span>
+      <span>🕷️ = 爬虫机器人</span>
+    </div>
+  </div>
+  <aside>
+    <div class="card">
+      <h3>⚙️ 工作流程</h3>
+      <ol id="stages"></ol>
+      <p id="stageDesc">点击「开始抓取」，看蜘蛛机器人沿着蛛网出发。</p>
+    </div>
+    <div class="card">
+      <h3>📊 实时统计</h3>
+      <div class="stats">
+        <div class="stat"><div class="v" id="stFetched">0</div><div class="k">已抓取页面</div></div>
+        <div class="stat"><div class="v" id="stQueued">0</div><div class="k">队列等待</div></div>
+        <div class="stat"><div class="v" id="stLinks">0</div><div class="k">发现新链接</div></div>
+        <div class="stat"><div class="v" id="stDup">0</div><div class="k">重复已去重</div></div>
+      </div>
+    </div>
+    <div class="card log-card">
+      <h3>📝 抓取日志</h3>
+      <div id="log"></div>
+    </div>
+  </aside>
+</main>
+
+<footer>单文件演示 · 零依赖 · 打开即用 —— 蜘蛛走过的每一条丝，都是互联网上的一条超链接</footer>
+
+<script>
+'use strict';
+/* ============ 基础 ============ */
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+let W = 0, H = 600;
+function resize(){
+  const w = cv.parentElement.clientWidth;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  W = Math.max(320, w); H = 600;
+  cv.width = W * dpr; cv.height = H * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener('resize', resize);
+
+const rand = (a,b)=>a+Math.random()*(b-a);
+const randi = n=>Math.floor(Math.random()*n);
+const pick = arr=>arr[randi(arr.length)];
+const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+const lerp = (a,b,t)=>a+(b-a)*t;
+const easeIO = t=>t*t*(3-2*t);
+const easeOutBack = t=>{ const c=1.70158; return 1+(c+1)*Math.pow(t-1,3)+c*Math.pow(t-1,2); };
+function turnToward(a,b,step){
+  let d=b-a;
+  while(d>Math.PI)d-=Math.PI*2; while(d<-Math.PI)d+=Math.PI*2;
+  return a+clamp(d,-step,step);
+}
+
+/* ============ URL 工具 ============ */
+const WORDS=['news','blog','shop','forum','wiki','video','photo','music','game','book','travel','food','tech','art'];
+const TLDS=['com','net','org','io'];
+function hostOf(url){ return url.replace(/^https?:\/\//,'').split('/')[0]; }
+function norm(url){ return url.trim().toLowerCase().replace(/\/+$/,''); }
+function randPath(){ let p=''; const n=1+randi(2); for(let i=0;i<n;i++) p+='/'+pick(WORDS)+randi(90+10); return p; }
+function childUrl(parent){
+  if(Math.random()<0.6) return 'https://'+parent.host+randPath();
+  return 'https://'+pick(WORDS)+'.'+pick(TLDS)+randPath();
+}
+function short(url){
+  let s=url.replace(/^https?:\/\//,'');
+  return s.length>26 ? s.slice(0,25)+'…' : s;
+}
+
+/* ============ 状态 ============ */
+const STAGES=[
+  {t:'发送请求', d:'蜘蛛向目标页面发起 HTTP 请求——就像敲门问："你好，我可以进来看看吗？"'},
+  {t:'下载页面', d:'服务器返回 HTML 源码，蜘蛛把整个页面的"原材料"搬运回来。'},
+  {t:'解析链接', d:'蜘蛛用解析器从 HTML 里抽出所有超链接，发现通往新页面的丝线。'},
+  {t:'数据入库', d:'提取标题正文等有用数据，存入数据仓库；新链接去重后加入待抓队列。'},
+  {t:'调度行走', d:'按广度优先策略从队列取出下一个 URL，蜘蛛沿着蛛网爬过去。'},
+];
+const S = {
+  time:0, running:false, started:false, done:false,
+  speed:1.5, maxDepth:3, maxNodes:80,
+  nodes:[], nodeById:{}, edges:[], queue:[], visited:new Set(), idSeq:0,
+  spider:{ x:0,y:0,angle:-Math.PI/2,legPhase:0,state:'idle',from:null,target:null,
+           curNode:null,t:0,dur:1,fetchT:0,fetchDur:2.4,spawned:false,stored:false,stage:-1,edgeHi:-1 },
+  stats:{fetched:0,links:0,dup:0},
+  packets:[], parts:[], dust:[],
+  curStage:-2,
+};
+const DB = {x:64, y:0};
+
+/* ============ DOM ============ */
+const $ = id=>document.getElementById(id);
+const seedInput=$('seed'), startBtn=$('startBtn'), resetBtn=$('resetBtn');
+const logEl=$('log'), stageDesc=$('stageDesc');
+const stagesEl=$('stages');
+STAGES.forEach((s,i)=>{
+  const li=document.createElement('li');
+  li.innerHTML='<span class="dot">'+(i+1)+'</span><span>'+s.t+'</span>';
+  stagesEl.appendChild(li);
+});
+function setStage(i){
+  if(i===S.curStage) return;
+  S.curStage=i; S.spider.stage=i;
+  [...stagesEl.children].forEach((li,k)=>li.classList.toggle('active', k===i));
+  stageDesc.textContent = i<0 ? '点击「开始抓取」，看蜘蛛机器人沿着蛛网出发。' : STAGES[i].d;
+}
+function addLog(msg){
+  const d=document.createElement('div');
+  d.textContent=msg;
+  logEl.prepend(d);
+  while(logEl.children.length>80) logEl.lastChild.remove();
+}
+function updateStats(){
+  $('stFetched').textContent=S.stats.fetched;
+  $('stQueued').textContent=S.queue.length;
+  $('stLinks').textContent=S.stats.links;
+  $('stDup').textContent=S.stats.dup;
+}
+function updateButtons(){
+  startBtn.textContent = S.running ? '⏸ 暂停'
+    : (S.done ? '🔁 重新开始' : (S.started ? '▶ 继续' : '▶ 开始抓取'));
+}
+
+/* ============ 图结构 ============ */
+function addNode(url,depth,x,y,parent){
+  const n={ id:++S.idSeq, url, host:hostOf(url), depth,
+            x, y, status:'unknown', progress:0, born:S.time,
+            seedAngle:rand(0,Math.PI*2), childCount:0, parentId: parent?parent.id:-1 };
+  S.nodes.push(n); S.nodeById[n.id]=n;
+  return n;
+}
+function placeChild(p){
+  for(let t=0;t<8;t++){
+    const a=p.seedAngle + p.childCount*2.399 + rand(-0.5,0.5);
+    const r=rand(150,240);
+    const x=clamp(p.x+Math.cos(a)*r, 70, W-70);
+    const y=clamp(p.y+Math.sin(a)*r, 60, H-60);
+    let ok=true;
+    for(const n of S.nodes){
+      const dx=n.x-x, dy=n.y-y;
+      if(dx*dx+dy*dy < 95*95){ ok=false; break; }
+    }
+    if(ok) return {x,y};
+  }
+  return {x:clamp(p.x+rand(-200,200),70,W-70), y:clamp(p.y+rand(-160,160),60,H-60)};
+}
+function discover(parent){
+  if(parent.depth>=S.maxDepth){ addLog('⛔ 已达抓取深度上限（'+S.maxDepth+' 层），不再深入'); return; }
+  const k=2+randi(3);
+  let added=0;
+  for(let i=0;i<k;i++){
+    if(S.nodes.length>=S.maxNodes){ addLog('⚠️ 页面节点达到上限，停止发现新链接'); break; }
+    const url=childUrl(parent), key=norm(url);
+    if(S.visited.has(key)){ S.stats.dup++; continue; }
+    S.visited.add(key);
+    const pos=placeChild(parent);
+    const n=addNode(url,parent.depth+1,pos.x,pos.y,parent);
+    n.status='queued';
+    S.queue.push(n);
+    S.edges.push([parent.id,n.id]);
+    parent.childCount++;
+    added++; S.stats.links++;
+  }
+  addLog('🔍 解析出 '+k+' 条链接：'+added+' 个新页面入队'+(k-added>0 ? '，'+(k-added)+' 个重复已去重' : ''));
+  updateStats();
+}
+
+/* ============ 流程控制 ============ */
+function reset(){
+  const seedRaw=(seedInput.value||'').trim()||'https://news.example.com/';
+  S.nodes=[]; S.nodeById={}; S.edges=[]; S.queue=[];
+  S.visited=new Set(); S.idSeq=0;
+  S.packets=[]; S.parts=[];
+  S.stats={fetched:0,links:0,dup:0};
+  S.done=false; S.started=false; S.running=false;
+  const root=addNode(seedRaw,0,W/2,H/2-60,null);
+  root.status='queued';
+  S.visited.add(norm(seedRaw));
+  S.queue.push(root);
+  const sp=S.spider;
+  sp.x=root.x; sp.y=root.y; sp.state='idle'; sp.target=null;
+  sp.curNode=root; sp.angle=-Math.PI/2; sp.edgeHi=-1; sp.stage=-1;
+  logEl.innerHTML='';
+  addLog('🕷️ 蜘蛛机器人已就位，种子 URL 进入待抓队列');
+  updateStats(); updateButtons(); setStage(-1);
+}
+function startFetch(n){
+  const sp=S.spider;
+  sp.state='fetch'; sp.fetchT=0; sp.fetchDur=2.4;
+  sp.spawned=false; sp.stored=false; sp.edgeHi=-1;
+  n.status='fetching'; n.progress=0;
+  addLog('➡️ 正在抓取 '+short(n.url));
+}
+function finish(){
+  S.running=false; S.done=true;
+  addLog('🏁 队列已空，本次抓取任务完成！共抓取 '+S.stats.fetched+' 个页面');
+  updateButtons(); setStage(-1); updateStats();
+}
+function tick(dt,dts){
+  S.time+=dt;
+  const sp=S.spider;
+  sp.legPhase += dt*(sp.state==='move'?14:3);
+  // 尘埃
+  for(const p of S.dust){ p.x+=p.vx*dt; p.y+=p.vy*dt;
+    if(p.x<0)p.x=W; if(p.x>W)p.x=0; if(p.y<0)p.y=H; if(p.y>H)p.y=0; }
+  // 数据包
+  for(let i=S.packets.length-1;i>=0;i--){
+    const pk=S.packets[i]; pk.t+=dt*1.1;
+    if(pk.t>=1) S.packets.splice(i,1);
+  }
+  // 解析粒子
+  for(let i=S.parts.length-1;i>=0;i--){
+    const p=S.parts[i]; p.life-=dt;
+    p.x+=p.vx*dt; p.y+=p.vy*dt; p.vx*=0.98; p.vy*=0.98;
+    if(p.life<=0) S.parts.splice(i,1);
+  }
+  if(!S.running) return;
+
+  if(sp.state==='idle'){
+    setStage(4);
+    if(S.queue.length===0){ finish(); return; }
+    const n=S.queue.shift(); updateStats();
+    if(n===sp.curNode){ startFetch(n); return; }
+    sp.from={x:sp.x,y:sp.y}; sp.target=n; sp.t=0;
+    const dx=n.x-sp.x, dy=n.y-sp.y;
+    sp.dur=Math.max(0.35, Math.hypot(dx,dy)/260);
+    sp.edgeHi=S.edges.findIndex(e=>e[1]===n.id);
+  }
+  else if(sp.state==='move'){
+    setStage(4);
+    sp.t+=dts/sp.dur;
+    const e=easeIO(clamp(sp.t,0,1));
+    sp.x=lerp(sp.from.x,sp.target.x,e);
+    sp.y=lerp(sp.from.y,sp.target.y,e)-Math.sin(Math.PI*e)*14;
+    sp.angle=turnToward(sp.angle,Math.atan2(sp.target.y-sp.from.y,sp.target.x-sp.from.x),dt*8);
+    if(sp.t>=1){
+      sp.x=sp.target.x; sp.y=sp.target.y;
+      sp.curNode=sp.target;
+      startFetch(sp.target);
+    }
+  }
+  else if(sp.state==='fetch'){
+    const n=sp.target;
+    sp.fetchT+=dts/sp.fetchDur;
+    const f=clamp(sp.fetchT,0,1);
+    const stage=f<0.18?0 : f<0.55?1 : f<0.85?2 : 3;
+    setStage(stage);
+    n.progress=f;
+    if(stage===2 && !sp.spawned){
+      sp.spawned=true;
+      discover(n);
+      for(let i=0;i<26;i++){
+        const a=rand(0,Math.PI*2), v=rand(60,200);
+        S.parts.push({x:n.x,y:n.y,vx:Math.cos(a)*v,vy:Math.sin(a)*v,life:rand(0.4,0.9)});
+      }
+    }
+    if(stage===3 && !sp.stored){
+      sp.stored=true;
+      S.stats.fetched++;
+      n.status='done'; n.progress=1;
+      addLog('✅ 抓取完成：'+short(n.url));
+      S.packets.push({x:n.x,y:n.y,t:0});
+      updateStats();
+    }
+    if(f>=1){ sp.state='idle'; sp.target=null; }
+  }
+}
+
+/* ============ 绘制 ============ */
+function rr(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+}
+function drawBG(){
+  const g=ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#0a1022'); g.addColorStop(1,'#070b16');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='rgba(80,110,160,.10)';
+  for(const p of S.dust){ ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,7); ctx.fill(); }
+}
+function drawThreads(){
+  const sp=S.spider;
+  S.edges.forEach((e,idx)=>{
+    const a=S.nodeById[e[0]], b=S.nodeById[e[1]];
+    if(!a||!b) return;
+    const hi=idx===sp.edgeHi;
+    ctx.save();
+    if(hi){ ctx.strokeStyle='#22d3ee'; ctx.shadowColor='#22d3ee'; ctx.shadowBlur=10; ctx.lineWidth=2; }
+    else { ctx.strokeStyle='rgba(90,120,170,.28)'; ctx.lineWidth=1; }
+    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+    ctx.restore();
+  });
+}
+function drawNode(n){
+  const pop=easeOutBack(clamp((S.time-n.born)/0.4,0,1));
+  const R=n.depth===0?20:15;
+  const col=n.status==='queued'?'#f5c542':n.status==='fetching'?'#22d3ee':n.status==='done'?'#34d399':'#8a94a8';
+  ctx.save(); ctx.translate(n.x,n.y); ctx.scale(pop,pop);
+  if(n.status==='fetching'){
+    ctx.save(); ctx.shadowColor=col; ctx.shadowBlur=20;
+    ctx.fillStyle=col; ctx.beginPath(); ctx.arc(0,0,R,0,7); ctx.fill(); ctx.restore();
+  }
+  ctx.fillStyle='#141b30'; ctx.beginPath(); ctx.arc(0,0,R,0,7); ctx.fill();
+  ctx.strokeStyle=col; ctx.lineWidth=2.5; ctx.beginPath(); ctx.arc(0,0,R,0,7); ctx.stroke();
+  if(n.status==='queued'){
+    ctx.save(); ctx.strokeStyle=col; ctx.globalAlpha=.45+.3*Math.sin(S.time*5);
+    ctx.setLineDash([5,4]); ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.arc(0,0,R+6,0,7); ctx.stroke(); ctx.restore();
+  }
+  ctx.fillStyle=col; ctx.font='bold 12px sans-serif';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(n.host.charAt(0).toUpperCase(),0,1);
+  if(n.status==='fetching'){
+    ctx.strokeStyle='#fff'; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.arc(0,0,R+3,-Math.PI/2,-Math.PI/2+n.progress*Math.PI*2); ctx.stroke();
+  }
+  if(n.status==='done'){
+    ctx.fillStyle='#34d399'; ctx.font='bold 11px sans-serif';
+    ctx.fillText('✓',R-3,-R+5);
+  }
+  ctx.restore();
+  ctx.fillStyle='rgba(180,200,230,.72)'; ctx.font='10px monospace'; ctx.textAlign='center';
+  ctx.fillText(short(n.url), n.x, n.y+R+15);
+}
+function drawSpider(sp){
+  ctx.save(); ctx.translate(sp.x,sp.y); ctx.rotate(sp.angle);
+  // 8 条腿
+  for(let s=-1;s<=1;s+=2){
+    for(let i=0;i<4;i++){
+      const hx=-16+i*10, hy=s*9;
+      const ph=sp.legPhase + i*Math.PI/2 + (s>0?Math.PI:0);
+      const fx=hx+16+Math.cos(ph)*9;
+      const lift=Math.max(0,Math.sin(ph))*10;
+      const fy=s*(24+Math.sin(ph)*4)-lift*0.6;
+      const kx=(hx+fx)/2, ky=(hy+fy)/2-13;
+      ctx.strokeStyle='#8a94a8'; ctx.lineWidth=3.5; ctx.lineCap='round';
+      ctx.beginPath(); ctx.moveTo(hx,hy); ctx.lineTo(kx,ky); ctx.lineTo(fx,fy); ctx.stroke();
+      ctx.fillStyle='#c7cede'; ctx.beginPath(); ctx.arc(kx,ky,2.5,0,7); ctx.fill();
+      ctx.fillStyle='#ff8c42'; ctx.beginPath(); ctx.arc(fx,fy,2.5,0,7); ctx.fill();
+    }
+  }
+  // 身体
+  const g=ctx.createLinearGradient(0,-14,0,14);
+  g.addColorStop(0,'#3a4560'); g.addColorStop(1,'#1c2338');
+  ctx.fillStyle=g;
+  ctx.beginPath(); ctx.ellipse(0,0,20,13,0,0,7); ctx.fill();
+  ctx.strokeStyle='#ff8c42'; ctx.lineWidth=1.5; ctx.stroke();
+  // 头部 + 发光眼睛
+  ctx.fillStyle='#2b3550'; ctx.beginPath(); ctx.ellipse(20,0,9,8,0,0,7); ctx.fill();
+  ctx.save(); ctx.shadowColor='#22d3ee'; ctx.shadowBlur=10; ctx.fillStyle='#22d3ee';
+  ctx.beginPath(); ctx.arc(23,-3.5,3,0,7); ctx.arc(23,3.5,3,0,7); ctx.fill(); ctx.restore();
+  // 触角
+  ctx.strokeStyle='#8a94a8'; ctx.lineWidth=1.5;
+  ctx.beginPath();
+  ctx.moveTo(26,-4); ctx.quadraticCurveTo(34,-12,40,-14);
+  ctx.moveTo(26,4); ctx.quadraticCurveTo(34,12,40,14);
+  ctx.stroke();
+  // 顶部信号灯
+  const bl=Math.sin(S.time*6)>0;
+  ctx.save(); if(bl){ ctx.shadowColor='#ff5252'; ctx.shadowBlur=8; }
+  ctx.fillStyle=bl?'#ff5252':'#5a1620';
+  ctx.beginPath(); ctx.arc(-4,-13,3,0,7); ctx.fill(); ctx.restore();
+  ctx.restore();
+  // 名牌
+  ctx.fillStyle='rgba(160,200,255,.85)'; ctx.font='11px monospace'; ctx.textAlign='center';
+  ctx.fillText('CRAWLER-01', sp.x, sp.y-40);
+}
+function drawDB(){
+  const x=64, y=H-58;
+  DB.x=x; DB.y=y-14;
+  ctx.save();
+  ctx.fillStyle='rgba(20,27,48,.92)'; rr(x-52,y-30,104,60,10); ctx.fill();
+  ctx.strokeStyle='#3b4d6e'; ctx.lineWidth=1; ctx.stroke();
+  ctx.fillStyle='#22304f'; ctx.fillRect(x-16,y-14,32,28);
+  ctx.fillStyle='#2f3f66'; ctx.beginPath(); ctx.ellipse(x,y-14,16,6,0,0,7); ctx.fill();
+  ctx.strokeStyle='#22d3ee'; ctx.beginPath(); ctx.ellipse(x,y-14,16,6,0,0,7); ctx.stroke();
+  ctx.fillStyle='rgba(180,200,230,.8)'; ctx.font='11px sans-serif'; ctx.textAlign='center';
+  ctx.fillText('数据仓库', x, y+24);
+  ctx.restore();
+}
+function draw(){
+  drawBG();
+  drawThreads();
+  drawDB();
+  // 数据包飞向仓库
+  for(const pk of S.packets){
+    const e=easeIO(clamp(pk.t,0,1));
+    const x=lerp(pk.x,DB.x,e), y=lerp(pk.y,DB.y,e)-Math.sin(Math.PI*e)*30;
+    ctx.save(); ctx.shadowColor='#34d399'; ctx.shadowBlur=10;
+    ctx.fillStyle='#34d399'; ctx.beginPath(); ctx.arc(x,y,5,0,7); ctx.fill(); ctx.restore();
+  }
+  for(const n of S.nodes) drawNode(n);
+  const sp=S.spider;
+  // 发送请求：光束
+  if(sp.state==='fetch' && sp.stage===0 && sp.target){
+    const n=sp.target;
+    ctx.save();
+    ctx.strokeStyle='rgba(170,230,255,.9)'; ctx.lineWidth=2;
+    ctx.shadowColor='#22d3ee'; ctx.shadowBlur=12;
+    ctx.setLineDash([8,6]); ctx.lineDashOffset=-S.time*60;
+    ctx.beginPath(); ctx.moveTo(sp.x,sp.y); ctx.lineTo(n.x,n.y); ctx.stroke();
+    ctx.restore();
+  }
+  // 下载中：扩散波纹
+  if(sp.state==='fetch' && sp.stage===1 && sp.target){
+    const n=sp.target;
+    for(let i=0;i<3;i++){
+      const r=((S.time*70+i*30)%90)+18;
+      ctx.save(); ctx.globalAlpha=clamp(1-r/110,0,1)*0.6;
+      ctx.strokeStyle='#22d3ee'; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.arc(n.x,n.y,r,0,7); ctx.stroke(); ctx.restore();
+    }
+  }
+  // 解析粒子
+  for(const p of S.parts){
+    ctx.save(); ctx.globalAlpha=clamp(p.life*2,0,1);
+    ctx.fillStyle='#f5c542'; ctx.beginPath(); ctx.arc(p.x,p.y,2.5,0,7); ctx.fill();
+    ctx.restore();
+  }
+  drawSpider(sp);
+}
+
+/* ============ 主循环 ============ */
+let last=performance.now();
+function frame(now){
+  const dt=Math.min(0.05,(now-last)/1000); last=now;
+  tick(dt, dt*S.speed);
+  draw();
+  requestAnimationFrame(frame);
+}
+
+/* ============ 事件 ============ */
+startBtn.addEventListener('click',()=>{
+  if(S.running){ S.running=false; }
+  else{
+    if(S.done) reset();
+    S.started=true; S.running=true;
+  }
+  updateButtons();
+});
+resetBtn.addEventListener('click',reset);
+$('speed').addEventListener('input',e=>{
+  S.speed=parseFloat(e.target.value);
+  $('speedV').textContent=S.speed.toFixed(1)+'x';
+});
+$('depth').addEventListener('input',e=>{
+  S.maxDepth=parseInt(e.target.value,10);
+  $('depthV').textContent=S.maxDepth;
+});
+
+/* ============ 启动 ============ */
+resize();
+for(let i=0;i<60;i++) S.dust.push({x:rand(0,W),y:rand(0,H),r:rand(0.6,2),vx:rand(-8,8),vy:rand(-8,8)});
+reset();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

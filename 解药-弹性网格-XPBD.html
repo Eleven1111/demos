@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>解药 · XPBD 弹性网格</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #05070f; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; touch-action: none; cursor: grab; }
+  canvas.grabbing { cursor: grabbing; }
+  .panel {
+    position: fixed; top: 14px; left: 14px; z-index: 10;
+    background: rgba(10, 14, 28, .72); border: 1px solid rgba(120, 180, 255, .16);
+    border-radius: 12px; padding: 12px 14px; color: #cfe3ff;
+    font: 12px/1.7 "Noto Sans SC", "PingFang SC", sans-serif;
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    user-select: none; -webkit-user-select: none; max-width: 230px;
+  }
+  .panel h1 { margin: 0 0 2px; font-size: 14px; letter-spacing: .2em; color: #ffe9b8; font-weight: 600; }
+  .panel .sub { color: #8fa3c8; font-size: 11px; margin-bottom: 8px; }
+  .panel label { display: flex; justify-content: space-between; color: #9db4dd; margin-top: 6px; }
+  .panel label b { color: #ffe9b8; font-weight: 500; }
+  .panel input[type=range] { width: 100%; margin: 2px 0 4px; accent-color: #ffb35c; }
+  .row { display: flex; gap: 8px; margin-top: 8px; }
+  .panel button {
+    flex: 1; border: 1px solid rgba(255, 179, 92, .4); background: rgba(255, 179, 92, .10);
+    color: #ffd9a3; border-radius: 8px; padding: 6px 0; font-size: 12px; cursor: pointer;
+  }
+  .panel button:active { background: rgba(255, 179, 92, .25); }
+  .stats { margin-top: 8px; color: #7d92b8; font-size: 11px; }
+  .stats b { color: #ff9d7a; font-weight: 600; }
+  .hint {
+    position: fixed; left: 50%; bottom: 5vh; transform: translateX(-50%);
+    color: rgba(245, 230, 200, .7); font: 13px/1.6 "Noto Serif SC", "Songti SC", serif;
+    letter-spacing: .3em; text-indent: .3em; white-space: nowrap; pointer-events: none;
+    text-shadow: 0 0 12px rgba(255,200,120,.3); transition: opacity 1.2s ease;
+  }
+  .hint.gone { opacity: 0; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="panel" id="panel">
+  <h1>解药 · 弹性网格</h1>
+  <div class="sub">XPBD 位置动力学 · 同思花《解药》原理</div>
+  <label>撕裂阈值 <b id="tearVal">2.4×</b></label>
+  <input type="range" id="tearRange" min="1.6" max="3.6" step="0.1" value="2.4">
+  <label>重力 <b id="gravVal">500</b></label>
+  <input type="range" id="gravRange" min="0" max="1400" step="20" value="500">
+  <div class="row">
+    <button id="pokeBtn">戳一下</button>
+    <button id="resetBtn">重置</button>
+  </div>
+  <div class="stats" id="stats">节点 0 · 约束 0 · 已断裂 <b>0</b></div>
+</div>
+<div class="hint" id="hint">按住拖拽 · 拉过头会撕裂</div>
+<script>
+'use strict';
+/* ============================================================
+   《解药》同款原理 · XPBD 弹性网格
+   学自 浙大猫学长拆解思花方法论：
+   - 不描述动画，只构建物理对象（节点=质量，约束=弹簧）
+   - XPBD（基于位置的动力学）求解，比质点-弹簧更稳定
+   - 事件=外力：鼠标拖拽是外力，撕裂是约束超限移除
+   ============================================================ */
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const hintEl = document.getElementById('hint');
+
+let W = 0, H = 0, DPR = 1;
+let nodes = [];        // {x,y,px,py,vx,vy,invMass,pinned,grabbed}
+let cons = [];         // {a,b,rest,broken}
+let sparks = [];
+let brokenCount = 0;
+let grabbed = null, grabOrigInvMass = 1;
+let pointer = { x: 0, y: 0, vx: 0, vy: 0, down: false, lx: 0, ly: 0 };
+let tearFactor = 2.4, gravity = 500;
+const SUBSTEPS = 24, DAMP = 0.999;
+let CX = 0, CY = 0, CR = 0, SP = 30;
+
+const TAU = Math.PI * 2;
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+// ---------- 建网：圆内网格，四周固定在圆上 ----------
+function buildGrid() {
+  nodes = []; cons = []; sparks = []; brokenCount = 0; grabbed = null;
+  SP = clamp(Math.min(W, H) * 0.042, 22, 34);
+  CR = Math.min(W, H) * 0.34;
+  CX = W * 0.5; CY = H * 0.46;
+  const n = Math.ceil((CR * 2) / SP);
+  const grid = [];
+  for (let j = 0; j <= n; j++) {
+    grid[j] = [];
+    for (let i = 0; i <= n; i++) {
+      const x = CX - CR + i * SP, y = CY - CR + j * SP;
+      const d = Math.hypot(x - CX, y - CY);
+      if (d > CR) { grid[j][i] = -1; continue; }
+      const pinned = d >= CR - SP * 1.15;
+      grid[j][i] = nodes.length;
+      nodes.push({ x, y, px: x, py: y, vx: 0, vy: 0,
+        invMass: pinned ? 0 : 1, pinned, grabbed: false });
+    }
+  }
+  const link = (a, b) => {
+    if (a < 0 || b < 0 || a === b) return;
+    const A = nodes[a], B = nodes[b];
+    cons.push({ a, b, rest: Math.hypot(A.x - B.x, A.y - B.y), broken: false, lam: 0 });
+  };
+  for (let j = 0; j <= n; j++) for (let i = 0; i <= n; i++) {
+    const c = grid[j][i]; if (c < 0) continue;
+    link(c, i + 1 <= n ? grid[j][i + 1] : -1);      // 横向
+    link(c, j + 1 <= n ? grid[j + 1][i] : -1);      // 纵向
+    link(c, (i + 1 <= n && j + 1 <= n) ? grid[j + 1][i + 1] : -1); // 剪切
+    link(c, (i - 1 >= 0 && j + 1 <= n) ? grid[j + 1][i - 1] : -1); // 剪切
+  }
+  // 开场轻微扰动，让膜"活"过来
+  for (const nd of nodes) {
+    if (!nd.pinned) { nd.vx = rand(-30, 30); nd.vy = rand(-30, 30); }
+  }
+  updateStats();
+}
+
+// ---------- XPBD 求解 ----------
+function substep(h, t) {
+  // 积分
+  for (const nd of nodes) {
+    if (nd.pinned || nd.grabbed) continue;
+    nd.vx += 0 * h;
+    nd.vy += gravity * h;
+    nd.vx *= DAMP; nd.vy *= DAMP;
+    nd.px = nd.x; nd.py = nd.y;
+    nd.x += nd.vx * h; nd.y += nd.vy * h;
+  }
+  if (grabbed) { // 被抓节点=运动学控制
+    grabbed.px = grabbed.x; grabbed.py = grabbed.y;
+    grabbed.x = pointer.x; grabbed.y = pointer.y;
+  }
+  // 约束投影（XPBD，compliance=0 刚性，靠子步数收敛）
+  for (const c of cons) {
+    if (c.broken) continue;
+    const A = nodes[c.a], B = nodes[c.b];
+    const dx = A.x - B.x, dy = A.y - B.y;
+    const d = Math.hypot(dx, dy) || 1e-6;
+    if (d > c.rest * tearFactor) { // 拉伸超限 → 断裂
+      c.broken = true; brokenCount++;
+      burst((A.x + B.x) / 2, (A.y + B.y) / 2);
+      continue;
+    }
+    const w = A.invMass + B.invMass;
+    if (w === 0) continue;
+    const C = d - c.rest;
+    const dl = -C / w;
+    const nx = dx / d, ny = dy / d;
+    A.x += nx * dl * A.invMass; A.y += ny * dl * A.invMass;
+    B.x -= nx * dl * B.invMass; B.y -= ny * dl * B.invMass;
+  }
+  // 速度回写
+  for (const nd of nodes) {
+    if (nd.pinned || nd.grabbed) continue;
+    nd.vx = (nd.x - nd.px) / h; nd.vy = (nd.y - nd.py) / h;
+  }
+}
+
+function burst(x, y) {
+  for (let i = 0; i < 7; i++) {
+    const a = rand(0, TAU), sp = rand(40, 220);
+    sparks.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: rand(0.25, 0.55), t: 0 });
+  }
+  if (sparks.length > 400) sparks.splice(0, sparks.length - 400);
+}
+
+// ---------- 渲染 ----------
+function strainColor(s) { // s: 应变 0=松弛
+  let r, g, b, a;
+  if (s < 0.18)      { r = 90;  g = 240; b = 255; a = 0.55; }
+  else if (s < 0.6)  { const k = (s - 0.18) / 0.42; r = 90 + k * 165; g = 240 - k * 60; b = 255 - k * 155; a = 0.65; }
+  else               { const k = Math.min(1, (s - 0.6) / 0.6); r = 255; g = 180 - k * 110; b = 100 - k * 60; a = 0.9; }
+  return { r: r | 0, g: g | 0, b: b | 0, a };
+}
+
+function draw(t, dt) {
+  ctx.clearRect(0, 0, W, H);
+  // 背景
+  const bg = ctx.createRadialGradient(CX, CY, CR * 0.2, CX, CY, Math.max(W, H) * 0.7);
+  bg.addColorStop(0, '#0b1026'); bg.addColorStop(1, '#05070f');
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+
+  // 固定圆环
+  ctx.strokeStyle = 'rgba(255,200,120,0.35)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(CX, CY, CR, 0, TAU); ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,200,120,0.12)'; ctx.lineWidth = 8;
+  ctx.beginPath(); ctx.arc(CX, CY, CR, 0, TAU); ctx.stroke();
+
+  // 约束线：按应变着色
+  ctx.lineWidth = 1.3;
+  for (const c of cons) {
+    if (c.broken) continue;
+    const A = nodes[c.a], B = nodes[c.b];
+    const d = Math.hypot(A.x - B.x, A.y - B.y);
+    const s = d / c.rest - 1;
+    const col = strainColor(Math.max(0, s));
+    ctx.strokeStyle = `rgba(${col.r},${col.g},${col.b},${col.a})`;
+    ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke();
+  }
+  // 固定点
+  ctx.fillStyle = 'rgba(255,205,130,0.85)';
+  for (const nd of nodes) if (nd.pinned) {
+    ctx.beginPath(); ctx.arc(nd.x, nd.y, 2.2, 0, TAU); ctx.fill();
+  }
+  // 被抓节点高亮
+  if (grabbed) {
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(grabbed.x, grabbed.y, 10 + 3 * Math.sin(t * 10), 0, TAU); ctx.stroke();
+  }
+  // 断裂火花
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    const s = sparks[i]; s.t += dt;
+    if (s.t >= s.life) { sparks.splice(i, 1); continue; }
+    s.x += s.vx * dt; s.y += s.vy * dt; s.vx *= 0.96; s.vy *= 0.96;
+    const k = 1 - s.t / s.life;
+    ctx.fillStyle = `rgba(255,${140 + 60 * k | 0},80,${0.9 * k})`;
+    ctx.beginPath(); ctx.arc(s.x, s.y, 2.2 * k + 0.6, 0, TAU); ctx.fill();
+  }
+  // 暗角
+  const vg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.max(W, H) * 0.75);
+  vg.addColorStop(0, 'rgba(0,0,8,0)'); vg.addColorStop(1, 'rgba(0,0,10,0.55)');
+  ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+}
+
+// ---------- 主循环 ----------
+let lastT = 0, statT = 0;
+function frame(nowMs) {
+  const t = nowMs / 1000;
+  let dt = t - lastT;
+  lastT = t;
+  if (!(dt > 0)) { requestAnimationFrame(frame); return; } // 首帧 dt=0 时跳过，避免除零炸掉整个模拟
+  dt = Math.min(dt, 1 / 30);
+  const h = dt / SUBSTEPS;
+  for (let s = 0; s < SUBSTEPS; s++) substep(h, t);
+  draw(t, dt);
+  statT += dt;
+  if (statT > 0.5) { statT = 0; updateStats(); }
+  requestAnimationFrame(frame);
+}
+
+function updateStats() {
+  const el = document.getElementById('stats');
+  const alive = cons.reduce((n, c) => n + (c.broken ? 0 : 1), 0);
+  el.innerHTML = `节点 ${nodes.length} · 约束 ${alive} · 已断裂 <b>${brokenCount}</b>`;
+}
+
+// ---------- 交互 ----------
+function nearestNode(x, y, maxD) {
+  let best = null, bd = maxD;
+  for (const nd of nodes) {
+    if (nd.pinned) continue;
+    const d = Math.hypot(nd.x - x, nd.y - y);
+    if (d < bd) { bd = d; best = nd; }
+  }
+  return best;
+}
+canvas.addEventListener('pointerdown', (e) => {
+  const r = canvas.getBoundingClientRect();
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  const nd = nearestNode(x, y, 34);
+  pointer.down = true; pointer.x = pointer.lx = x; pointer.y = pointer.ly = y; pointer.vx = pointer.vy = 0;
+  if (nd) {
+    grabbed = nd; nd.grabbed = true;
+    grabOrigInvMass = nd.invMass; nd.invMass = 0;
+    canvas.classList.add('grabbing');
+  }
+  hideHint();
+});
+window.addEventListener('pointermove', (e) => {
+  if (!pointer.down) return;
+  const r = canvas.getBoundingClientRect();
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  pointer.vx = (x - pointer.lx) * 60; pointer.vy = (y - pointer.ly) * 60;
+  pointer.lx = x; pointer.ly = y; pointer.x = x; pointer.y = y;
+});
+window.addEventListener('pointerup', () => {
+  pointer.down = false;
+  if (grabbed) { // 松手：把拖拽速度还给节点，可以甩飞
+    grabbed.grabbed = false; grabbed.invMass = grabOrigInvMass;
+    grabbed.vx = clamp(pointer.vx, -1600, 1600);
+    grabbed.vy = clamp(pointer.vy, -1600, 1600);
+    grabbed = null;
+    canvas.classList.remove('grabbing');
+  }
+});
+function hideHint() { hintEl.classList.add('gone'); }
+setTimeout(hideHint, 9000);
+
+// ---------- 面板 ----------
+function bindPanel() {
+  const tearR = document.getElementById('tearRange');
+  const gravR = document.getElementById('gravRange');
+  tearR.addEventListener('input', () => {
+    tearFactor = parseFloat(tearR.value);
+    document.getElementById('tearVal').textContent = tearFactor.toFixed(1) + '×';
+  });
+  gravR.addEventListener('input', () => {
+    gravity = parseFloat(gravR.value);
+    document.getElementById('gravVal').textContent = gravity;
+  });
+  document.getElementById('resetBtn').addEventListener('click', buildGrid);
+  document.getElementById('pokeBtn').addEventListener('click', () => {
+    for (const nd of nodes) {
+      if (nd.pinned) continue;
+      const dx = nd.x - CX, dy = nd.y - CY;
+      const d = Math.hypot(dx, dy) || 1;
+      const f = Math.max(0, 1 - d / (CR * 1.2));
+      nd.vx += (dx / d) * 900 * f + rand(-60, 60);
+      nd.vy += (dy / d) * 900 * f - 260 * f;
+    }
+  });
+  // 移动端：面板不挡画布手势
+  document.getElementById('panel').addEventListener('pointerdown', (e) => e.stopPropagation());
+}
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  buildGrid();
+}
+window.addEventListener('resize', resize);
+
+resize();
+bindPanel();
+requestAnimationFrame((ms) => { lastT = ms / 1000; frame(ms); });
+
+// 冒烟测试钩子（无害）
+window.__demo = {
+  get brokenCount() { return brokenCount; },
+  get nodeCount() { return nodes.length; },
+  get conCount() { return cons.length; }
+};
+</script>
+</body>
+</html>

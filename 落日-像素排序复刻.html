@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>落日 · 像素排序复刻</title>
+<style>
+  :root{ color-scheme: dark; }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  body{
+    background:#0b0e1a; color:#e8ecff;
+    font-family:-apple-system,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    min-height:100vh; display:flex; flex-direction:column; align-items:center;
+    padding:18px 14px 30px;
+  }
+  h1{ font-size:19px; font-weight:600; letter-spacing:3px; margin:6px 0 2px; }
+  .sub{ font-size:11px; color:#8b93b8; margin-bottom:12px; letter-spacing:2px; }
+  canvas{
+    width:min(92vw,460px); aspect-ratio:3/4; border-radius:10px; display:block;
+    background:#1a29b0; box-shadow:0 12px 44px rgba(30,60,220,.35);
+  }
+  .panel{
+    width:min(92vw,460px); margin-top:14px; background:#141833;
+    border:1px solid #262c55; border-radius:12px; padding:14px 16px 12px;
+  }
+  .row{ margin:10px 0; }
+  .row label{ display:flex; justify-content:space-between; font-size:13px; color:#c6cdf2; margin-bottom:6px; }
+  .row label b{ color:#ffd98a; font-weight:600; font-variant-numeric:tabular-nums; }
+  input[type=range]{ width:100%; accent-color:#ffb300; }
+  .tip{ font-size:11px; color:#6d76a3; margin-top:10px; line-height:1.8; }
+</style>
+</head>
+<body>
+<h1>落日 · 像素排序复刻</h1>
+<div class="sub">PIXEL SORTING × RGB SPLIT × GLITCH SLICES</div>
+<canvas id="c"></canvas>
+<div class="panel">
+  <div class="row"><label>流动速度 <b id="v-speed"></b></label><input id="s-speed" type="range" min="0" max="100" value="45"></div>
+  <div class="row"><label>RGB 错位 <b id="v-rgb"></b></label><input id="s-rgb" type="range" min="0" max="100" value="40"></div>
+  <div class="row"><label>故障条带 <b id="v-slice"></b></label><input id="s-slice" type="range" min="0" max="100" value="55"></div>
+  <div class="tip">复刻小红书《落日》的故障艺术：太阳下方的"融化"是逐列按亮度做的像素排序，颜色自然从红橙褪成淡黄；叠加 RGB 通道错位与随机错位条带，逐帧抖动形成流动感。滑杆实时生效。</div>
+</div>
+<script>
+(function(){
+'use strict';
+/* ---------- 画布与缓冲 ---------- */
+var cv = document.getElementById('c');
+var ctx = cv.getContext('2d');
+var W = 900, H = 1200;
+cv.width = W; cv.height = H;
+
+var S = 0.5, w2 = Math.round(W*S), h2 = Math.round(H*S); // 半分辨率做像素排序，省性能
+function mkCanvas(w,h){ var c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+var base = mkCanvas(w2,h2), work = mkCanvas(w2,h2);
+var bctx = base.getContext('2d');
+var wctx = work.getContext('2d', { willReadFrequently: true });
+
+// 噪点贴片（颗粒感）
+var noiseC = mkCanvas(128,128);
+(function(){
+  var nctx = noiseC.getContext('2d');
+  var id = nctx.createImageData(128,128);
+  for (var i=0;i<id.data.length;i+=4){
+    var v = (Math.random()*255)|0;
+    id.data[i]=v; id.data[i+1]=v; id.data[i+2]=v; id.data[i+3]=255;
+  }
+  nctx.putImageData(id,0,0);
+})();
+
+/* ---------- 静态底图：宝蓝天 + 红日 ---------- */
+var SUN = { x: w2/2, y: Math.round(h2*0.40), r: Math.round(w2*0.235) };
+var MELT_Y0 = Math.round(SUN.y + SUN.r*0.92); // 融化区起点：太阳下缘
+var MELT_H = h2 - MELT_Y0;
+
+function paintBase(){
+  var g = bctx.createLinearGradient(0,0,0,h2);
+  g.addColorStop(0,'#1a29b0'); g.addColorStop(0.55,'#2136c6'); g.addColorStop(1,'#17207f');
+  bctx.fillStyle = g; bctx.fillRect(0,0,w2,h2);
+  var rg = bctx.createRadialGradient(SUN.x,SUN.y,SUN.r*0.1, SUN.x,SUN.y,SUN.r*2.1);
+  rg.addColorStop(0,'rgba(255,110,30,0.5)'); rg.addColorStop(1,'rgba(255,110,30,0)');
+  bctx.fillStyle = rg; bctx.fillRect(0,0,w2,h2);
+  rg = bctx.createRadialGradient(SUN.x,SUN.y,0, SUN.x,SUN.y,SUN.r);
+  rg.addColorStop(0,'#ff3d00'); rg.addColorStop(0.5,'#ff5e00');
+  rg.addColorStop(0.78,'#ff8f00'); rg.addColorStop(1,'#ffb700');
+  bctx.fillStyle = rg;
+  bctx.beginPath(); bctx.arc(SUN.x,SUN.y,SUN.r,0,Math.PI*2); bctx.fill();
+}
+paintBase();
+
+/* ---------- 参数面板 ---------- */
+var elSpeed = document.getElementById('s-speed');
+var elRgb = document.getElementById('s-rgb');
+var elSlice = document.getElementById('s-slice');
+function readParams(){
+  return {
+    speed: 0.2 + parseFloat(elSpeed.value)/100*2.2,
+    rgb: Math.round(parseFloat(elRgb.value)/100*10),
+    slices: Math.round(parseFloat(elSlice.value)/100*8)
+  };
+}
+function paintLabels(){
+  var p = readParams();
+  document.getElementById('v-speed').textContent = p.speed.toFixed(1)+'×';
+  document.getElementById('v-rgb').textContent = p.rgb+'px';
+  document.getElementById('v-slice').textContent = p.slices+'条';
+}
+elSpeed.addEventListener('input', paintLabels);
+elRgb.addEventListener('input', paintLabels);
+elSlice.addEventListener('input', paintLabels);
+paintLabels();
+
+/* ---------- 像素排序融化 ---------- */
+var col = new Uint32Array(MELT_H); // 每列的打包像素：高8位=亮度键
+var slices = []; // {sy, sh, dx, until}
+
+function meltFrame(t, P){
+  wctx.drawImage(base, 0, 0);
+  var img = wctx.getImageData(0, MELT_Y0, w2, MELT_H);
+  var d = img.data, w = img.width, h = img.height;
+  var x, y, i;
+
+  // 1) 逐列按亮度降序排列 —— 亮的(太阳色)在上，暗的(蓝天)在下，形成垂落条带
+  //    亮度键叠加随时间向下传播的行波 + 细小噪声，条带持续形变流动
+  var waveAmp = 9 + P.speed*4;
+  var tPhase = t*0.0016*P.speed;
+  for (x=0; x<w; x++){
+    var xph = x*0.021;
+    for (y=0; y<h; y++){
+      i = (y*w+x)*4;
+      var lum = 0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
+      var wv = waveAmp*Math.sin(y*0.045 - tPhase + xph);
+      var nz = (Math.random()-0.5)*6;
+      var key = Math.round(lum + wv + nz);
+      key = key<0?0:(key>255?255:key);
+      col[y] = (key<<24) | (d[i]<<16) | (d[i+1]<<8) | d[i+2];
+    }
+    col.sort(); // Uint32 默认按数值升序 = 按亮度键升序
+    for (y=0; y<h; y++){
+      var v = col[h-1-y]; // 取反转为降序：亮在上
+      i = (y*w+x)*4;
+      var f = y/(h-1); // 越往下越褪成淡黄
+      var fr = 0.62*f, fb = 0.66*f;
+      var r = (v>>>16)&255, gg = (v>>>8)&255, b = v&255;
+      d[i]   = r + (255-r)*fr;
+      d[i+1] = gg + (246-gg)*fr;
+      d[i+2] = b + (230-b)*fb;
+    }
+  }
+
+  // 2) RGB 通道错位：R 左移、 B 右移
+  if (P.rgb > 0){
+    var k = Math.min(P.rgb, w-1);
+    var rowR = new Uint8Array(w), rowB = new Uint8Array(w);
+    for (y=0; y<h; y++){
+      var baseI = y*w*4;
+      for (x=0; x<w; x++){ rowR[x]=d[baseI+x*4]; rowB[x]=d[baseI+x*4+2]; }
+      for (x=0; x<w-k; x++) d[baseI+x*4] = rowR[x+k];
+      for (x=k; x<w; x++) d[baseI+x*4+2] = rowB[x-k];
+    }
+  }
+  wctx.putImageData(img, 0, MELT_Y0);
+
+  // 3) 故障错位条带：随机挑几条水平带，整体平移
+  slices = slices.filter(function(s){ return s.until > t; });
+  while (slices.length < P.slices){
+    var sh = 3 + Math.random()*11;
+    slices.push({
+      sy: MELT_Y0 + Math.random()*(MELT_H-sh),
+      sh: sh,
+      dx: (Math.random()<0.5?-1:1)*(3+Math.random()*15),
+      until: t + 180 + Math.random()*420
+    });
+  }
+  for (var si=0; si<slices.length; si++){
+    var s = slices[si];
+    wctx.drawImage(work, 0, s.sy, w2, s.sh, s.dx, s.sy, w2, s.sh);
+  }
+}
+
+/* ---------- 主循环：开场蓝屏 + 落日融化 ---------- */
+function drawFrame(t){
+  var T = (t/1000) % 14;
+  if (T < 2.6){
+    // 开场：纯宝蓝 + 英文花体
+    ctx.fillStyle = '#1a29b0'; ctx.fillRect(0,0,W,H);
+    var a;
+    if (T < 0.6) a = T/0.6;
+    else if (T > 2.0) a = Math.max(0,(2.6-T)/0.6);
+    else a = 1;
+    ctx.globalAlpha = 0.92*a;
+    ctx.fillStyle = '#d7e2ff';
+    ctx.font = 'italic 42px Georgia, "Times New Roman", serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('From this moment on the sun sets…', W/2, H*0.5);
+    ctx.globalAlpha = 1;
+  } else {
+    var P = readParams();
+    meltFrame(t, P);
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(work, 0, 0, W, H);
+    // 颗粒
+    ctx.globalAlpha = 0.05;
+    var ox = -((Math.random()*128)|0), oy = -((Math.random()*128)|0);
+    for (var gx=ox; gx<W; gx+=128)
+      for (var gy=oy; gy<H; gy+=128)
+        ctx.drawImage(noiseC, gx, gy);
+    ctx.globalAlpha = 1;
+  }
+  requestAnimationFrame(drawFrame);
+}
+requestAnimationFrame(drawFrame);
+})();
+</script>
+</body>
+</html>
