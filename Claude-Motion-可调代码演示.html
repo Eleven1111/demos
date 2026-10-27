@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Motion 式演示 · 动画即代码</title>
+<style id="playerCss">
+#stage{
+  --h1:222; --h2:267; --h3:190;
+  position:relative; width:min(960px,100%); aspect-ratio:16/9; margin:0 auto;
+  overflow:hidden; border-radius:14px; color:hsl(var(--h1),30%,95%);
+  background:
+    radial-gradient(120% 90% at 85% -10%, hsla(var(--h2),85%,60%,.35), transparent 55%),
+    radial-gradient(90% 80% at 8% 110%, hsla(var(--h3),85%,55%,.22), transparent 55%),
+    linear-gradient(135deg, hsl(var(--h1),45%,10%), hsl(var(--h2),48%,15%));
+  font-family:-apple-system,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  box-shadow:0 18px 50px rgba(0,0,0,.45);
+  -webkit-tap-highlight-color:transparent; user-select:none;
+}
+#stage .badge{
+  position:absolute; top:.9em; left:1em; z-index:5; display:flex; align-items:center; gap:.5em;
+  font-size:.52em; letter-spacing:.18em; color:hsl(var(--h1),40%,82%);
+}
+#stage .badge .dot{ width:.55em; height:.55em; border-radius:50%; background:hsl(var(--h3),90%,60%); animation:cmPulse 1.6s ease-in-out infinite; }
+@keyframes cmPulse{ 0%,100%{opacity:1; transform:scale(1)} 50%{opacity:.35; transform:scale(.7)} }
+#stage .prog{ position:absolute; top:0; left:0; right:0; height:.28em; background:rgba(255,255,255,.08); z-index:6; }
+#stage .progFill{ height:100%; width:0%; background:linear-gradient(90deg, hsl(var(--h1),90%,62%), hsl(var(--h2),90%,64%)); }
+#stage .tc{
+  position:absolute; right:1em; bottom:.8em; z-index:5; font-size:.52em; letter-spacing:.08em;
+  color:hsl(var(--h1),35%,78%); font-variant-numeric:tabular-nums;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+#stage .scene{ position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; opacity:0; visibility:hidden; padding:4% 6%; box-sizing:border-box; text-align:center; }
+/* 场景 1：标题 */
+#stage .s1Title{ font-size:3.05em; font-weight:800; letter-spacing:.03em; line-height:1.15; }
+#stage .s1Title .ch{ display:inline-block; will-change:transform,opacity; }
+#stage .s1Sub{ margin-top:.9em; font-size:.92em; letter-spacing:.52em; text-indent:.52em; color:hsl(var(--h1),90%,72%); font-weight:600; }
+#stage .s1Sub2{ margin-top:.7em; font-size:.78em; color:hsl(var(--h1),30%,80%); letter-spacing:.12em; }
+/* 场景 2：代码窗口 */
+#stage .win{
+  width:80%; max-width:34em; text-align:left; border-radius:.7em; overflow:hidden;
+  background:hsla(var(--h1),35%,8%,.88); border:1px solid hsla(var(--h1),70%,55%,.4);
+  box-shadow:0 1em 2.6em rgba(0,0,0,.4);
+}
+#stage .winBar{ display:flex; align-items:center; gap:.45em; padding:.55em .8em; background:hsla(var(--h1),30%,16%,.9); }
+#stage .winBar i{ width:.62em; height:.62em; border-radius:50%; background:hsl(var(--h1),25%,38%); display:block; }
+#stage .winBar i:first-child{ background:hsl(4,80%,62%); }
+#stage .winBar i:nth-child(2){ background:hsl(42,90%,58%); }
+#stage .winBar i:nth-child(3){ background:hsl(140,60%,50%); }
+#stage .winBar em{ font-style:normal; margin-left:.6em; font-size:.6em; color:hsl(var(--h1),30%,75%); font-family:ui-monospace,Menlo,Consolas,monospace; }
+#stage .codeBody{ padding:.9em 1.1em 1.1em; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.6em; line-height:1.95; color:hsl(var(--h1),45%,86%); }
+#stage .codeBody .cl{ min-height:1.95em; white-space:pre; }
+#stage .codeBody .cl.cmt{ color:hsl(var(--h3),45%,62%); }
+#stage .s2Caption{ margin-top:1.1em; font-size:.8em; color:hsl(var(--h1),30%,82%); letter-spacing:.06em; }
+/* 场景 3：缓动图形 */
+#stage .lane{ position:relative; width:88%; height:21%; }
+#stage .lane::after{ content:""; position:absolute; left:0; right:0; bottom:6%; border-bottom:1px dashed hsla(var(--h1),60%,70%,.35); }
+#stage .laneLabel{ position:absolute; left:0; top:-.4em; font-size:.62em; letter-spacing:.3em; color:hsl(var(--h1),45%,72%); }
+#stage .shape{ position:absolute; bottom:9%; width:2.1em; height:2.1em; will-change:left,transform; }
+#stage .shape.circle{ border-radius:50%; background:linear-gradient(135deg, hsl(var(--h1),90%,66%), hsl(var(--h2),90%,58%)); }
+#stage .shape.square{ border-radius:.35em; background:linear-gradient(135deg, hsl(var(--h3),85%,58%), hsl(var(--h1),85%,60%)); }
+#stage .shape.tri{ background:linear-gradient(180deg, hsl(var(--h2),90%,68%), hsl(var(--h1),90%,55%)); clip-path:polygon(50% 0, 100% 100%, 0 100%); }
+#stage .s3Caption{ margin-top:2.2em; font-size:.8em; color:hsl(var(--h1),30%,82%); letter-spacing:.06em; }
+/* 场景 4：收尾 */
+#stage .s4Big{ font-size:2.5em; font-weight:800; letter-spacing:.02em; will-change:transform,opacity; }
+#stage .chips{ display:flex; flex-wrap:wrap; gap:.6em; justify-content:center; margin-top:1.3em; }
+#stage .chip{
+  font-size:.68em; padding:.5em 1em; border-radius:2em; letter-spacing:.05em;
+  border:1px solid hsla(var(--h1),80%,65%,.5); color:hsl(var(--h1),60%,86%);
+  background:hsla(var(--h1),60%,40%,.14); font-variant-numeric:tabular-nums;
+}
+#stage .s4Sub{ margin-top:1.2em; font-size:.82em; color:hsl(var(--h1),30%,80%); letter-spacing:.08em; }
+</style>
+<style>
+  *{ box-sizing:border-box; }
+  body{ margin:0; background:#080a10; color:#e9edf8; font-family:-apple-system,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif; }
+  .wrap{ max-width:980px; margin:0 auto; padding:22px 16px 44px; }
+  header h1{ font-size:21px; margin:0 0 6px; font-weight:700; }
+  header p{ margin:0; color:#8b94a9; font-size:13.5px; line-height:1.7; }
+  .card{ background:#10131c; border:1px solid #222839; border-radius:14px; padding:16px; margin-top:16px; }
+  .card h2{ font-size:13px; letter-spacing:.14em; color:#8b94a9; margin:0 0 10px; font-weight:600; }
+  .ctl{ display:grid; grid-template-columns:52px 1fr 62px; align-items:center; gap:12px; margin:12px 0; }
+  .ctl label{ font-size:14px; color:#c6cde0; }
+  .ctl .val{ text-align:right; font-size:13px; color:#9fb4ff; font-variant-numeric:tabular-nums; }
+  input[type=range]{ width:100%; accent-color:#5b83ff; height:28px; }
+  .btnRow{ display:flex; flex-wrap:wrap; gap:10px; margin-top:6px; }
+  .btn{ background:#1b2130; color:#e8ecf8; border:1px solid #2c3448; border-radius:10px; padding:10px 16px; font-size:14px; cursor:pointer; }
+  .btn:active{ transform:translateY(1px); }
+  .btn.primary{ background:#3f66e0; border-color:#3f66e0; }
+  pre#codeView{ background:#090d15; border:1px solid #222839; border-radius:10px; padding:14px; overflow:auto; font-size:12.5px; line-height:1.75; color:#c9d4f2; white-space:pre; margin:0; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  .hint{ color:#69718a; font-size:12px; margin-top:10px; line-height:1.7; }
+  #toast{ position:fixed; left:50%; bottom:26px; transform:translateX(-50%) translateY(20px); background:#22304f; color:#eaf0ff; padding:10px 18px; border-radius:10px; font-size:14px; opacity:0; pointer-events:none; transition:all .25s ease; }
+  #toast.show{ opacity:1; transform:translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Claude Motion 式演示 · 动画即代码</h1>
+    <p>这段 13 秒讲解动画没有视频文件：每一帧都由一段代码实时算出来。拖动下面的滑杆改节奏、字号、配色和弹性，画面立刻跟着变；调好后点「复制完整代码」，整段动画就是一个文件，拿走就能用。</p>
+  </header>
+
+  <div class="card" style="padding:10px">
+    <div id="stageMount"></div>
+  </div>
+
+  <div class="card">
+    <h2>调 参 数</h2>
+    <div class="ctl">
+      <label for="inSpeed">节奏</label>
+      <input type="range" id="inSpeed" min="0.25" max="2.5" step="0.05" value="1">
+      <span class="val" id="valSpeed">×1.00</span>
+    </div>
+    <div class="ctl">
+      <label for="inFont">字号</label>
+      <input type="range" id="inFont" min="0.6" max="1.6" step="0.05" value="1">
+      <span class="val" id="valFont">100%</span>
+    </div>
+    <div class="ctl">
+      <label for="inHue">配色</label>
+      <input type="range" id="inHue" min="0" max="360" step="1" value="222">
+      <span class="val" id="valHue">222°</span>
+    </div>
+    <div class="ctl">
+      <label for="inBounce">弹性</label>
+      <input type="range" id="inBounce" min="0" max="1.5" step="0.05" value="0.8">
+      <span class="val" id="valBounce">0.80</span>
+    </div>
+    <div class="btnRow">
+      <button class="btn" id="btnPlay">暂停</button>
+      <button class="btn" id="btnRestart">重新开始</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>这 段 动 画 的 代 码</h2>
+    <pre id="codeView"></pre>
+    <div class="btnRow" style="margin-top:12px">
+      <button class="btn primary" id="btnCopy">复制完整代码</button>
+    </div>
+    <p class="hint">复制得到的是一个完整的单文件网页：把当前参数写死在里面，打开即播，不需要任何其他文件。想换内容，就改代码里的场景与文字——这正是「动画即代码」的玩法。</p>
+  </div>
+</div>
+<div id="toast">已复制完整代码</div>
+
+<script>
+var STAGE_HTML = `
+<div id="stage">
+  <div class="badge"><span class="dot"></span>动画即代码 · CODE-DRIVEN</div>
+  <div class="prog"><div class="progFill"></div></div>
+  <section class="scene" id="s1">
+    <div class="s1Title"><span class="ch">动</span><span class="ch">画</span><span class="ch">，</span><span class="ch">即</span><span class="ch">代</span><span class="ch">码</span></div>
+    <div class="s1Sub">ANIMATION AS CODE</div>
+    <div class="s1Sub2">提示词写动画 · 代码就是成片</div>
+  </section>
+  <section class="scene" id="s2">
+    <div class="win">
+      <div class="winBar"><i></i><i></i><i></i><em>讲解动画.js</em></div>
+      <div class="codeBody">
+        <div class="cl cmt" data-t="// 一段代码，就是一部动画"></div>
+        <div class="cl" data-t="scene(标题).text(动画，即代码).springIn()"></div>
+        <div class="cl" data-t="scene(代码).typeLines(源码)"></div>
+        <div class="cl" data-t="scene(缓动).shapes(圆, 方, 三角).bounce(弹性)"></div>
+        <div class="cl" data-t="play(loop = true)"></div>
+      </div>
+    </div>
+    <div class="s2Caption">没有关键帧文件，没有渲染农场 —— 只有源码</div>
+  </section>
+  <section class="scene" id="s3">
+    <div class="lane"><span class="laneLabel">滚动</span><div class="shape circle"></div></div>
+    <div class="lane"><span class="laneLabel">弹跳</span><div class="shape square"></div></div>
+    <div class="lane"><span class="laneLabel">脉冲</span><div class="shape tri"></div></div>
+    <div class="s3Caption">缓动是写出来的：改一个参数，动作的性格就变了</div>
+  </section>
+  <section class="scene" id="s4">
+    <div class="s4Big">改参数，不重渲。</div>
+    <div class="chips"><span class="chip" id="chipSpeed"></span><span class="chip" id="chipFont"></span><span class="chip" id="chipHue"></span><span class="chip" id="chipBounce"></span></div>
+    <div class="s4Sub">这段动画没有视频文件 —— 只有一段代码</div>
+  </section>
+  <div class="tc">0.0s / 13.0s</div>
+</div>`;
+
+function playerMain(P){
+  var T = 13;
+  var stage = document.getElementById('stage');
+  if(!stage) return { toggle:function(){return false;}, restart:function(){}, isPaused:function(){return false;} };
+  var fill = stage.querySelector('.progFill');
+  var tc = stage.querySelector('.tc');
+  var scenes = {
+    s1: document.getElementById('s1'),
+    s2: document.getElementById('s2'),
+    s3: document.getElementById('s3'),
+    s4: document.getElementById('s4')
+  };
+  var chars = stage.querySelectorAll('#s1 .ch');
+  var s1Sub = stage.querySelector('.s1Sub');
+  var s1Sub2 = stage.querySelector('.s1Sub2');
+  var win = stage.querySelector('#s2 .win');
+  var s2Cap = stage.querySelector('.s2Caption');
+  var lines = stage.querySelectorAll('#s2 .cl');
+  var lineStart = [], lineDur = [], acc0 = 0.15;
+  for(var i=0;i<lines.length;i++){
+    var len = (lines[i].getAttribute('data-t')||'').length;
+    var d = 0.3 + len*0.042;
+    lineStart.push(acc0); lineDur.push(d); acc0 += d + 0.12;
+  }
+  var circle = stage.querySelector('.shape.circle');
+  var square = stage.querySelector('.shape.square');
+  var tri = stage.querySelector('.shape.tri');
+  var s3Cap = stage.querySelector('.s3Caption');
+  var s4Big = stage.querySelector('.s4Big');
+  var chips = stage.querySelectorAll('#s4 .chip');
+  var chipSpeed = document.getElementById('chipSpeed');
+  var chipFont = document.getElementById('chipFont');
+  var chipHue = document.getElementById('chipHue');
+  var chipBounce = document.getElementById('chipBounce');
+
+  function c01(v){ return v<0?0:(v>1?1:v); }
+  function easeOut(p){ return 1-Math.pow(1-p,3); }
+  function easeOutBack(p,s){ var c=s; return 1 + (c+1)*Math.pow(p-1,3) + c*Math.pow(p-1,2); }
+  function winOp(t,a,b){
+    var fi = c01((t-a)/0.3), fo = c01((b-t)/0.3);
+    return Math.min(fi,fo);
+  }
+  function setScene(el,o){ el.style.opacity = o; el.style.visibility = o<=0.003 ? 'hidden' : 'visible'; }
+
+  var paused = false, acc = 0, last = -1, lastFs = 0;
+  function render(t){
+    stage.style.setProperty('--h1', Math.round(P.hue));
+    stage.style.setProperty('--h2', Math.round((P.hue+45)%360));
+    stage.style.setProperty('--h3', Math.round((P.hue+300)%360));
+    var w = stage.clientWidth;
+    if(w>0){
+      var fs = w/44*P.font;
+      if(Math.abs(fs-lastFs)>0.05){ stage.style.fontSize = fs+'px'; lastFs = fs; }
+    }
+    fill.style.width = (t/T*100)+'%';
+    tc.textContent = t.toFixed(1)+'s / 13.0s'+(paused?' · 已暂停':'');
+
+    /* 场景 1：标题 0–3.2 */
+    setScene(scenes.s1, winOp(t,0,3.2));
+    if(t<3.4){
+      for(var i=0;i<chars.length;i++){
+        var p = c01((t-0.15-i*0.1)/0.55);
+        var e = easeOutBack(p, 1.1 + P.bounce*1.6);
+        chars[i].style.opacity = p;
+        chars[i].style.transform = 'translateY('+((1-e)*0.55)+'em) scale('+(0.55+0.45*e)+')';
+      }
+      var sp = easeOut(c01((t-1.15)/0.8));
+      s1Sub.style.opacity = sp; s1Sub.style.transform = 'translateY('+((1-sp)*0.4)+'em)';
+      var sp2 = easeOut(c01((t-1.5)/0.8));
+      s1Sub2.style.opacity = sp2;
+    }
+    /* 场景 2：代码 3.2–6.6 */
+    setScene(scenes.s2, winOp(t,3.2,6.6));
+    if(t>=3.0 && t<6.8){
+      var lt = t-3.2;
+      var wp = easeOut(c01(lt/0.45));
+      win.style.transform = 'translateY('+((1-wp)*0.7)+'em) scale('+(0.96+0.04*wp)+')';
+      win.style.opacity = wp;
+      for(var j=0;j<lines.length;j++){
+        var full = lines[j].getAttribute('data-t')||'';
+        var lp = c01((lt-lineStart[j])/lineDur[j]);
+        var n = Math.floor(full.length*lp);
+        lines[j].textContent = full.slice(0,n) + ((lp>0 && lp<1) ? '▍' : '');
+      }
+      s2Cap.style.opacity = easeOut(c01((lt-2.55)/0.6));
+    }
+    /* 场景 3：缓动 6.6–10.2 */
+    setScene(scenes.s3, winOp(t,6.6,10.2));
+    if(t>=6.4 && t<10.4){
+      var p3 = c01((t-6.6)/3.6);
+      var x = -4 + p3*106;
+      circle.style.left = x+'%';
+      circle.style.transform = 'translateX(-50%) rotate('+(p3*720)+'deg)';
+      square.style.left = x+'%';
+      var hop = -Math.abs(Math.sin(p3*Math.PI*3)) * 2.3 * P.bounce;
+      square.style.transform = 'translate(-50%, '+hop+'em) rotate('+(p3*360)+'deg)';
+      tri.style.left = x+'%';
+      var pu = 1 + Math.sin(p3*Math.PI*4) * 0.24 * P.bounce;
+      tri.style.transform = 'translateX(-50%) scale('+pu+') rotate('+(Math.sin(p3*Math.PI*2)*9)+'deg)';
+      s3Cap.style.opacity = easeOut(c01((t-7.1)/0.7));
+    }
+    /* 场景 4：收尾 10.2–13 */
+    var o4 = Math.min(c01((t-10.2)/0.3), c01((13-t)/0.35));
+    setScene(scenes.s4, o4);
+    if(t>=10.0){
+      var bp = c01((t-10.25)/0.6);
+      var be = easeOutBack(bp, 1.1 + P.bounce*1.4);
+      s4Big.style.opacity = bp;
+      s4Big.style.transform = 'scale('+(0.7+0.3*be)+')';
+      for(var k=0;k<chips.length;k++){
+        chips[k].style.opacity = easeOut(c01((t-10.8-k*0.14)/0.5));
+      }
+      if(chipSpeed) chipSpeed.textContent = '速度 ×'+P.speed.toFixed(2);
+      if(chipFont) chipFont.textContent = '字号 '+Math.round(P.font*100)+'%';
+      if(chipHue) chipHue.textContent = '色相 '+Math.round(P.hue)+'°';
+      if(chipBounce) chipBounce.textContent = '弹性 '+P.bounce.toFixed(2);
+    }
+  }
+  function frame(now){
+    if(last<0) last = now;
+    var dt = (now-last)/1000; last = now;
+    if(!paused) acc += dt*P.speed;
+    render(acc % T);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+  return {
+    toggle: function(){ paused = !paused; return paused; },
+    restart: function(){ acc = 0; paused = false; },
+    isPaused: function(){ return paused; }
+  };
+}
+</script>
+
+<script>
+var PARAMS = { speed: 1, font: 1, hue: 222, bounce: 0.8 };
+document.getElementById('stageMount').innerHTML = STAGE_HTML;
+var player = playerMain(PARAMS);
+
+function snippet(){
+  return [
+    '// 动画即代码 · Claude Motion 式演示',
+    '// 没有视频文件：每一帧都由下面这段代码算出来',
+    '',
+    'const 参数 = {',
+    '  节奏: ' + PARAMS.speed.toFixed(2) + ',   // 播放速度倍率',
+    '  字号: ' + PARAMS.font.toFixed(2) + ',   // 画面文字缩放',
+    '  色相: ' + Math.round(PARAMS.hue) + ',      // 整体配色（0–360）',
+    '  弹性: ' + PARAMS.bounce.toFixed(2) + '    // 弹跳与回弹强度',
+    '};',
+    '',
+    '时间线([' ,
+    '  { 场景: "标题", 起: 0.0,  止: 3.2  },',
+    '  { 场景: "代码", 起: 3.2,  止: 6.6  },',
+    '  { 场景: "缓动", 起: 6.6,  止: 10.2 },',
+    '  { 场景: "收尾", 起: 10.2, 止: 13.0 }',
+    ']).循环播放();'
+  ].join('\n');
+}
+function refreshCode(){ document.getElementById('codeView').textContent = snippet(); }
+
+function bind(id, valId, key, fmt, apply){
+  var el = document.getElementById(id), val = document.getElementById(valId);
+  el.addEventListener('input', function(){
+    PARAMS[key] = parseFloat(el.value);
+    val.textContent = fmt(PARAMS[key]);
+    refreshCode();
+  });
+  val.textContent = fmt(PARAMS[key]);
+}
+bind('inSpeed','valSpeed','speed', function(v){ return '×'+v.toFixed(2); });
+bind('inFont','valFont','font', function(v){ return Math.round(v*100)+'%'; });
+bind('inHue','valHue','hue', function(v){ return Math.round(v)+'°'; });
+bind('inBounce','valBounce','bounce', function(v){ return v.toFixed(2); });
+refreshCode();
+
+var btnPlay = document.getElementById('btnPlay');
+btnPlay.addEventListener('click', function(){
+  var paused = player.toggle();
+  btnPlay.textContent = paused ? '播放' : '暂停';
+});
+document.getElementById('btnRestart').addEventListener('click', function(){
+  player.restart();
+  btnPlay.textContent = '暂停';
+});
+
+function buildStandalone(){
+  var css = document.getElementById('playerCss').textContent;
+  var bodyCss = '\nbody{margin:0;background:#07090f;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:12px;box-sizing:border-box}\n';
+  var openTag = '<scr' + 'ipt>', closeTag = '</scr' + 'ipt>';
+  return '<!DOCTYPE html>\n<html lang="zh-CN">\n<head>\n<meta charset="UTF-8">\n'
+    + '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+    + '<title>动画即代码 · 可调演示</title>\n<style>\n' + css + bodyCss + '</style>\n</head>\n<body>\n'
+    + STAGE_HTML + '\n'
+    + openTag + '\nvar PARAMS = ' + JSON.stringify(PARAMS) + ';\n(' + playerMain.toString() + ')(PARAMS);\n' + closeTag
+    + '\n</body>\n</html>';
+}
+document.getElementById('btnCopy').addEventListener('click', function(){
+  var text = buildStandalone();
+  function done(){
+    var toast = document.getElementById('toast');
+    toast.classList.add('show');
+    setTimeout(function(){ toast.classList.remove('show'); }, 1800);
+  }
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(done, function(){ fallback(); });
+  } else { fallback(); }
+  function fallback(){
+    var ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); } catch(e){}
+    document.body.removeChild(ta); done();
+  }
+});
+</script>
+</body>
+</html>
